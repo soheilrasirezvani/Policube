@@ -16,10 +16,17 @@ outputDir = fullfile(desktopDir, ['PolicubeResults_' runTag]);
 nPointsPerLine     = 10;
 accelPatternLabels = {'acc0','acc1','acc2','acc3'};
 
-% PSD method: 'periodogram' (single FFT, sharper) or 'welch' (smoother)
-psdMethod   = 'welch';
-welchSegLen = [];          % [] = auto (8 segments, 50% overlap)
+% PSD method: 'periodogram' (single FFT) or 'welch' (segmented average).
+% No zero padding is applied - the FFT length equals the analysis-window
+% sample count, so frequency resolution = fs / N_samples.
+psdMethod   = 'periodogram';
+welchSegLen = [];
 welchOverlap = 0.5;
+
+% Time window (s) used for the PSD / CPSD analysis. Set to [] to use the
+% full recording. Default focuses on the visibly-active portion of the
+% video where the structure rings (1-4 s in the example clip).
+analysisWindow = [1 4];
 
 % Manual peak picking (click on PSD)
 manualPick = false;
@@ -47,7 +54,7 @@ else
 end
 
 isRawMode = strcmpi(analysisMode, 'raw_stabilized');
-nfft      = 16384;
+nfft      = [];   % [] = no zero padding (FFT length = N samples in window)
 
 % Plot styling
 set(groot, 'DefaultAxesFontName', 'Helvetica');
@@ -292,23 +299,43 @@ lineIdx = cell(nLines, 1);
 for k = 1:nOrigLines, lineIdx{k} = (k-1)*N + (1:N); end
 for kk = 1:nPat, lineIdx{nOrigLines + kk} = nStructPts + kk; end
 
-%% ===================== PSD (Welch or Periodogram) ================
+%% ===================== PSD (analysis-window periodogram) =========
+% Crop the time histories to analysisWindow before frequency analysis.
+% The video is already bandpassed by the magnification stage so no
+% additional time-domain filtering is applied. FFT length = number of
+% samples in the window (no zero padding).
+if ~isempty(analysisWindow)
+    tMask = t >= analysisWindow(1) & t <= analysisWindow(2);
+else
+    tMask = true(size(t));
+end
+Yd_psd       = Yd(tMask, :);
+Yd_accAll_psd = Yd_accAll(tMask, :);
+nWin         = size(Yd_psd, 1);
+if nWin < 8
+    error('Analysis window too short (%d samples). Widen analysisWindow.', nWin);
+end
+fprintf('\nPSD analysis window: %.2f - %.2f s   (%d samples, df = %.4f Hz)\n', ...
+    t(find(tMask,1,'first')), t(find(tMask,1,'last')), nWin, fs/nWin);
+
 switch lower(psdMethod)
     case 'welch'
         if isempty(welchSegLen)
-            segLen = max(256, floor(nF/8));
+            segLen = max(64, floor(nWin/4));
         else
             segLen = welchSegLen;
         end
-        segLen  = min(segLen, nF);
+        segLen  = min(segLen, nWin);
         nOver   = round(segLen * welchOverlap);
         winPSD  = hann(segLen, 'periodic');
-        [Pxx, f] = pwelch(Yd, winPSD, nOver, nfft, fs);
-        [Pacc_pp, ~] = pwelch(Yd_accAll, winPSD, nOver, nfft, fs);
+        nfft_use = segLen;          % no zero padding
+        [Pxx, f]     = pwelch(Yd_psd,       winPSD, nOver, nfft_use, fs);
+        [Pacc_pp, ~] = pwelch(Yd_accAll_psd, winPSD, nOver, nfft_use, fs);
     otherwise
-        winPSD  = hann(nF, 'periodic');
-        [Pxx, f] = periodogram(Yd, winPSD, nfft, fs);
-        [Pacc_pp, ~] = periodogram(Yd_accAll, winPSD, nfft, fs);
+        winPSD  = hann(nWin, 'periodic');
+        nfft_use = nWin;            % no zero padding
+        [Pxx, f]     = periodogram(Yd_psd,       winPSD, nfft_use, fs);
+        [Pacc_pp, ~] = periodogram(Yd_accAll_psd, winPSD, nfft_use, fs);
 end
 
 Pline = zeros(numel(f), nLines);
@@ -437,51 +464,58 @@ else
     selectedPeaks = globalPeakFreqs;
 end
 
-%% ===================== CROSS-SPECTRUM + COHERENCE ================
+%% ===================== CROSS-SPECTRUM (magnitude + phase) ========
 hasPairs = nPat >= 2;
 if hasPairs
-    fprintf('\nComputing cross spectrum / coherence across %d accelerometer patterns...\n', nPat);
+    fprintf('\nComputing cross spectrum across %d accelerometer patterns...\n', nPat);
 
-    patSig = zeros(nF, nPat); patLab = strings(1, nPat);
+    % Use the same analysis-window segment as the auto PSDs so the
+    % cross spectrum has the same frequency resolution and no zero pad.
+    patSigFull = zeros(nF, nPat); patLab = strings(1, nPat);
     for kk = 1:nPat
         ki = nOrigLines + kk;
-        patSig(:,kk) = Yd(:, lineIdx{ki});
-        patLab(kk)   = string(lineLabels{ki});
+        patSigFull(:,kk) = Yd(:, lineIdx{ki});
+        patLab(kk)       = string(lineLabels{ki});
     end
-    patSig = detrend(patSig, 1);
+    patSigFull = detrend(patSigFull, 1);
+    patSig     = patSigFull(tMask, :);     % windowed signals
+    nWinCS     = size(patSig, 1);
 
     pairs  = nchoosek(1:nPat, 2);
     nPairs = size(pairs, 1);
     pairNames = strings(1, nPairs);
 
-    % Use pwelch/cpsd/mscohere for consistent statistics
-    segLenCS = max(256, floor(nF/8));
-    nOverCS  = round(segLenCS * 0.5);
-    winCS    = hann(segLenCS, 'periodic');
-    [~, f_cs] = cpsd(patSig(:,1), patSig(:,1), winCS, nOverCS, nfft, fs);
+    % Single-window cross-periodogram (no zero padding, no segment avg)
+    winCS    = hann(nWinCS, 'periodic');
+    nfft_cs  = nWinCS;
+    W        = patSig .* winCS;
+    Yfft     = fft(W, nfft_cs);
+    nF_pos   = floor(nfft_cs/2) + 1;
+    Yfft_pos = Yfft(1:nF_pos, :);
+    f_cs     = (0:nF_pos-1).' * fs / nfft_cs;
+    S_win    = sum(winCS.^2);
+    scaleCS  = 1 / (fs * S_win);
 
-    CPSD_complex = zeros(numel(f_cs), nPairs);
-    COH          = zeros(numel(f_cs), nPairs);
+    CPSD_complex = zeros(nF_pos, nPairs);
     for k = 1:nPairs
         a = pairs(k,1); b = pairs(k,2);
-        CPSD_complex(:,k) = cpsd(patSig(:,a), patSig(:,b), winCS, nOverCS, nfft, fs);
-        COH(:,k)          = mscohere(patSig(:,a), patSig(:,b), winCS, nOverCS, nfft, fs);
+        Gxy = Yfft_pos(:,a) .* conj(Yfft_pos(:,b)) * scaleCS;
+        Gxy(2:end-1) = 2 * Gxy(2:end-1);   % single-sided
+        CPSD_complex(:,k) = Gxy;
         pairNames(k) = patLab(a) + " - " + patLab(b);
     end
     CPSDmag     = abs(CPSD_complex);
     CPSDphase   = rad2deg(angle(CPSD_complex));
     CPSDmag_avg = mean(CPSDmag, 2);
-    COH_avg     = mean(COH, 2);
 
-    % Time-domain cross-correlation at the dominant peak band
-    fprintf('\nTime-domain cross-correlation (after band-limiting to peak ± 0.5 Hz):\n');
+    % Time-domain cross-correlation on the raw (already-magnified) signals
+    % over the analysis window. No additional bandpass filtering is
+    % applied - the magnification step already band-limits the signals.
+    fprintf('\nTime-domain cross-correlation (no extra filtering, %.2f-%.2f s):\n', ...
+        t(find(tMask,1,'first')), t(find(tMask,1,'last')));
     peakForXC = selectedPeaks(1);
-    nyq = fs/2;
-    bpXC = [max(peakForXC-0.5, 0.05) min(peakForXC+0.5, 0.99*nyq)];
-    [bxc, axc] = butter(4, bpXC/nyq, 'bandpass');
-    patSigBP   = filtfilt(bxc, axc, patSig);
-
-    maxLagSec = min(2, 0.5*t(end));
+    tWin      = t(tMask);
+    maxLagSec = min(2, 0.5*(tWin(end)-tWin(1)));
     maxLag    = round(maxLagSec * fs);
     xcMat     = zeros(2*maxLag+1, nPairs);
     lagSec    = (-maxLag:maxLag).' / fs;
@@ -490,14 +524,14 @@ if hasPairs
 
     for k = 1:nPairs
         a = pairs(k,1); b = pairs(k,2);
-        s1 = patSigBP(:,a) - mean(patSigBP(:,a));
-        s2 = patSigBP(:,b) - mean(patSigBP(:,b));
+        s1 = patSig(:,a) - mean(patSig(:,a));
+        s2 = patSig(:,b) - mean(patSig(:,b));
         [xc, ~] = xcorr(s1, s2, maxLag, 'normalized');
         xcMat(:,k) = xc;
         [~, iMax]  = max(abs(xc));
         bestLagSec(k)   = lagSec(iMax);
         bestLagPhase(k) = wrapTo180(360 * peakForXC * bestLagSec(k));
-        fprintf('  %s: lag = %+0.4f s, phase @ %.2f Hz = %+0.1f deg\n', ...
+        fprintf('  %s: lag = %+0.4f s, phase @ %.3f Hz = %+0.1f deg\n', ...
             pairNames(k), bestLagSec(k), peakForXC, bestLagPhase(k));
     end
 
@@ -509,10 +543,11 @@ end
 %% ===================== MAC (mode shape consistency) ==============
 if nOrigLines >= 1
     fprintf('\nComputing operational mode shape at f = %.3f Hz on structural line...\n', selectedPeaks(1));
-    [~, ipk] = min(abs(f - selectedPeaks(1)));
-    nfftMode = 2^nextpow2(nF);
-    Yfft = fft(Yd .* hann(nF,'periodic'), nfftMode);
-    fM   = (0:nfftMode/2).' * fs / nfftMode;
+    % Mode-shape FFT on the SAME analysis window with NO zero padding.
+    Yd_mode  = Yd(tMask, :);
+    nWinMode = size(Yd_mode, 1);
+    Yfft = fft(Yd_mode .* hann(nWinMode,'periodic'), nWinMode);
+    fM   = (0:floor(nWinMode/2)).' * fs / nWinMode;
     [~, ipkM] = min(abs(fM - selectedPeaks(1)));
     modeCplx = Yfft(ipkM, :).';
 
@@ -972,10 +1007,10 @@ overallRow = table("OVERALL", overallN, overallMean, overallStd, ...
 peakStatsAll = [peakStats; overallRow];
 writetable(peakStatsAll, fullfile(outputDir, 'peak_statistics_mean_std.csv'));
 
-%% ===================== PLOT 8: CPSD magnitude + phase + coherence
+%% ===================== PLOT 8: CPSD magnitude + phase =============
 if hasPairs
-    figCS = figure('Name','Cross spectrum & coherence','Color','w','Position',[60 40 1300 900]);
-    tlCS = tiledlayout(3,1,'TileSpacing','compact','Padding','compact');
+    figCS = figure('Name','Cross spectrum','Color','w','Position',[60 40 1300 800]);
+    tlCS = tiledlayout(2,1,'TileSpacing','compact','Padding','compact');
     title(tlCS, sprintf('Cross-spectral analysis between %d accelerometer patterns', nPat), 'FontWeight','bold');
 
     % Magnitude
@@ -1010,29 +1045,11 @@ if hasPairs
     yline(0,'k--','in-phase','HandleVisibility','off');
     yline(180,'k:','out-of-phase','HandleVisibility','off');
     yline(-180,'k:','HandleVisibility','off');
-    ylabel('Phase [\circ]'); ylim([-180 180]); xlim(spectraXLim);
+    xlabel('Frequency [Hz]'); ylabel('Phase [\circ]'); ylim([-180 180]); xlim(spectraXLim);
     title('Cross-spectral phase','FontWeight','normal');
     legend('Location','northeastoutside');
 
-    % Coherence
-    nexttile; hold on; grid on; box on;
-    for k = 1:nPairs
-        plot(f_cs, COH(:,k), ':', 'LineWidth', 1.0, 'DisplayName', pairNames(k));
-    end
-    plot(f_cs, COH_avg, 'k-', 'LineWidth', 2.5, 'DisplayName','Average MSC');
-    for p = 1:numel(selectedPeaks)
-        xline(selectedPeaks(p), 'r--','HandleVisibility','off');
-    end
-    if ~isempty(accelTargetHz)
-        xline(accelTargetHz, '-','Color',[0.05 0.3 0.85],'LineWidth',2,'HandleVisibility','off');
-    end
-    yline(0.8,'k--','HandleVisibility','off');
-    xlim(spectraXLim); ylim([0 1.05]);
-    xlabel('Frequency [Hz]'); ylabel('MSC \gamma^{2}');
-    title('Magnitude-squared coherence','FontWeight','normal');
-    legend('Location','northeastoutside');
-
-    saveHQ(figCS, '08_cross_spectrum_coherence');
+    saveHQ(figCS, '08_cross_spectrum_mag_phase');
 
     %% ===================== PLOT 9: time-domain cross-correlation =
     figXC = figure('Name','Time-domain xcorr','Color','w','Position',[80 80 1200 600]);
