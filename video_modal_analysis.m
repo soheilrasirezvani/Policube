@@ -25,7 +25,10 @@ welchOverlap = 0.5;
 manualPick = false;
 
 if strcmpi(analysisMode, 'bandpass_magnified')
-    lineLabels    = {'1st landing'};
+    % Each entry in lineLabels is one structural "portion" (landing,
+    % flight segment, etc.) on which N points will be placed. Add or
+    % remove entries to analyze however many portions you need.
+    lineLabels    = {'1st landing', 'Lower flight', '2nd landing', '3rd landing'};
     stabilize     = false;
     magBand       = [9 11];
     accelTargetHz = 10.3;
@@ -766,6 +769,64 @@ title(ax,'Global PSD: per-line averages (dotted) and grand average (bold black)'
 legend(ax, [hLine; hGlob], [string(lineLabels), "GLOBAL"], 'Location','northeastoutside');
 saveHQ(figG, '05_PSD_global_overlay');
 
+%% ===================== PLOT 5b: Per-portion comparison ===========
+% One PSD per STRUCTURAL portion on a single panel, plus their
+% cross-portion average in bold black. This is the natural figure
+% when comparing several portions (e.g., 1st landing / Lower flight /
+% 2nd landing / 3rd landing) at the proposed modal frequency.
+if nOrigLines >= 2
+    figPP = figure('Name','Per-portion comparison','Color','w','Position',[60 60 1200 720]);
+    ax = axes(figPP); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
+    portionCols = lines(nOrigLines);
+    hPort = gobjects(nOrigLines, 1);
+    portPeakHz = nan(nOrigLines, 1);
+    for k = 1:nOrigLines
+        hPort(k) = semilogy(ax, f, max(Pline(:,k), eps), '-', ...
+            'LineWidth', 1.6, 'Color', portionCols(k,:));
+        portPeakHz(k) = paraPeakHz(Pline(:,k), f, magBand);
+    end
+    Pport_avg = mean(Pline(:, 1:nOrigLines), 2, 'omitnan');
+    hPortAvg = semilogy(ax, f, max(Pport_avg, eps), 'k-', 'LineWidth', 3.2);
+    portAvgPeakHz = paraPeakHz(Pport_avg, f, magBand);
+
+    % Mark each portion's peak as a small triangle on its own curve
+    for k = 1:nOrigLines
+        yMark = interp1(f, max(Pline(:,k), eps), portPeakHz(k), 'linear', 'extrap');
+        scatter(ax, portPeakHz(k), yMark, 70, portionCols(k,:), 'v', 'filled', ...
+            'MarkerEdgeColor','k', 'LineWidth', 0.5, 'HandleVisibility','off');
+    end
+
+    xline(ax, portAvgPeakHz, 'r--', sprintf('cross-portion avg-PSD peak = %.3f Hz', portAvgPeakHz), ...
+        'LineWidth', 1.6, 'LabelOrientation','horizontal');
+    if ~isempty(accelTargetHz) && isfinite(accelTargetHz)
+        xline(ax, accelTargetHz, '-', sprintf('accel = %.2f Hz', accelTargetHz), ...
+            'LineWidth', 2.0, 'Color',[0.05 0.3 0.85], 'LabelOrientation','horizontal', ...
+            'LabelVerticalAlignment','bottom');
+    end
+
+    set(ax,'YScale','log'); xlim(ax, spectraXLim);
+    xlabel(ax,'Frequency [Hz]'); ylabel(ax,'PSD [px^{2}/Hz]');
+    title(ax, sprintf('Per-portion comparison (%d structural portions) - solid colors, cross-portion average bold black', nOrigLines), ...
+        'FontWeight','normal');
+
+    legLabs = strings(nOrigLines, 1);
+    for k = 1:nOrigLines
+        legLabs(k) = sprintf('%s  (peak %.3f Hz)', lineLabels{k}, portPeakHz(k));
+    end
+    legend(ax, [hPort; hPortAvg], [legLabs; sprintf("Cross-portion average  (peak %.3f Hz)", portAvgPeakHz)], ...
+        'Location','northeastoutside');
+    saveHQ(figPP, '05b_per_portion_comparison');
+
+    % CSV with per-portion peak frequencies
+    portionTbl = table(string(lineLabels(1:nOrigLines))', portPeakHz, ...
+        'VariableNames', {'Portion','PeakHz'});
+    portionTbl = [portionTbl; {string("CROSS_PORTION_AVG"), portAvgPeakHz}];
+    writetable(portionTbl, fullfile(outputDir, 'per_portion_peaks.csv'));
+
+    fprintf('\n===== PER-PORTION PEAK FREQUENCIES =====\n');
+    disp(portionTbl);
+end
+
 %% ===================== PLOT 6: Accel KLT PSDs (single plot) ======
 if nAccPts > 0
     figAP = figure('Name','Accel KLT PSDs','Color','w','Position',[60 60 1200 700]);
@@ -990,18 +1051,28 @@ if nOrigLines >= 1
     saveHQ(figMS, '10_mode_shape');
 
     if ~isempty(MAC)
-        figMAC = figure('Name','MAC','Color','w','Position',[100 100 600 500]);
+        figMAC = figure('Name','MAC','Color','w','Position',[100 100 700 600]);
         imagesc(MAC); axis square; colorbar; caxis([0 1]); colormap(parula);
         set(gca,'XTick',1:nOrigLines,'XTickLabel',lineLabels(1:nOrigLines), ...
-                'YTick',1:nOrigLines,'YTickLabel',lineLabels(1:nOrigLines));
+                'YTick',1:nOrigLines,'YTickLabel',lineLabels(1:nOrigLines), ...
+                'XTickLabelRotation', 30);
         for a = 1:nOrigLines
             for b = 1:nOrigLines
+                txtCol = 'w';
+                if MAC(a,b) > 0.6, txtCol = 'k'; end
                 text(b, a, sprintf('%.2f', MAC(a,b)), ...
-                    'HorizontalAlignment','center','Color','w','FontWeight','bold');
+                    'HorizontalAlignment','center','Color', txtCol, ...
+                    'FontWeight','bold','FontSize',11);
             end
         end
-        title('MAC between lines @ peak frequency','FontWeight','normal');
+        title(sprintf('MAC between portions @ %.3f Hz', selectedPeaks(1)),'FontWeight','normal');
         saveHQ(figMAC, '11_MAC_matrix');
+
+        % Also save the MAC matrix to CSV for the paper appendix
+        macTbl = array2table(MAC, ...
+            'VariableNames', matlab.lang.makeValidName(lineLabels(1:nOrigLines)), ...
+            'RowNames', lineLabels(1:nOrigLines));
+        writetable(macTbl, fullfile(outputDir, 'MAC_matrix.csv'), 'WriteRowNames', true);
     end
 end
 
