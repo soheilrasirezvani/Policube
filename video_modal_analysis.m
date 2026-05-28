@@ -883,6 +883,12 @@ ax = axes(figS); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc = 1:height(peakStats);
 
 % Background swarm of every individual point peak (grouped on x for context)
+% Note: the x-axis is CATEGORICAL (1..nLines). Each dot's raw x value is
+% group_index + uniform_random(±jitterAmp) so the points don't stack on
+% top of each other. A click on a dot will therefore show e.g. X=1.92,
+% which has no physical meaning - the real "group" is the rounded value.
+% A custom DataTipTemplate is attached so clicking shows the group name,
+% point index, and peak [Hz] instead of raw x/y.
 jitterAmp = 0.12;
 hSc = [];
 for k = 1:nLines
@@ -891,15 +897,32 @@ for k = 1:nLines
     else
         fp = peakAccPerKLT(:, k - nOrigLines);
     end
-    xj = xc(k) + (rand(numel(fp),1) - 0.5) * 2 * jitterAmp;
+    nfp = numel(fp);
+    xj = xc(k) + (rand(nfp,1) - 0.5) * 2 * jitterAmp;
     hh = scatter(ax, xj, fp, 36, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.65, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
+    try
+        groupCells = repmat({char(peakStats.Line(k))}, nfp, 1);
+        hh.DataTipTemplate.DataTipRows = [
+            dataTipTextRow('Group',     groupCells);
+            dataTipTextRow('Point idx', (1:nfp)');
+            dataTipTextRow('Peak [Hz]', fp, '%.4f')];
+    catch
+        % dataTipTextRow requires R2019b+; ignore on older releases.
+    end
     if isempty(hSc), hSc = hh; end
 end
 % Single legend entry for all individual point peaks
 hSc.HandleVisibility = 'on';
 hSc.DisplayName = sprintf('Individual point peaks (n = %d)', overallN);
+
+% Faint vertical separators between groups so a glance at the raw x
+% value is enough to tell which group a dot belongs to.
+for k = 1:(nLines-1)
+    xline(ax, k + 0.5, ':', 'Color', [0.75 0.75 0.75], ...
+        'HandleVisibility', 'off');
+end
 
 % Overall mean +/- 1 sigma band stretching across the whole plot
 xRange = [0.5, height(peakStats) + 0.5];
