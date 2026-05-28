@@ -795,19 +795,35 @@ if nAccPts > 0
     saveHQ(figAP, '06_acc_klt_PSDs_single_plot');
 end
 
-%% ===================== PLOT 7: Peak statistics dot+error plot ====
-% Marker + errorbar (not a bar chart) with a tight y-range around the
-% accelerometer reference, individual point peaks shown as light dots,
-% and numeric mean ± std labels next to each entry.
-figS = figure('Name','Peak mean +/- std per line','Color','w','Position',[80 80 1000 560]);
+%% ===================== PLOT 7: Overall mean +/- std pooled =======
+% Pool every individual point peak (all structural-line points + all
+% per-KLT-point accel peaks) and report ONE overall mean and std.
+% Dots remain grouped on the x-axis for traceability.
+allPeaks       = peakFreqPerPoint(~isnan(peakFreqPerPoint));
+overallMean    = mean(allPeaks);
+overallStd     = std(allPeaks, 0);
+overallN       = numel(allPeaks);
+overallSEM     = overallStd / sqrt(overallN);
+if ~isempty(accelTargetHz)
+    overallErrPct = 100 * abs(overallMean - accelTargetHz) / accelTargetHz;
+else
+    overallErrPct = NaN;
+end
+
+fprintf('\n===== OVERALL POOLED PEAK STATISTIC =====\n');
+fprintf('  n = %d points (%d line + %d accel KLT)\n', overallN, nStructPts, nAccPts);
+fprintf('  Overall mean +/- std = %.4f +/- %.4f Hz   (SEM = %.4f)\n', overallMean, overallStd, overallSEM);
+if ~isempty(accelTargetHz)
+    fprintf('  Error vs accelerometer (%.2f Hz) = %.3f%%\n', accelTargetHz, overallErrPct);
+end
+
+figS = figure('Name','Overall pooled peak mean +/- std','Color','w','Position',[80 80 1100 600]);
 ax = axes(figS); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc = 1:height(peakStats);
 
-% Background swarm of individual point peaks
-% Structural lines: N=10 NCC-tracked point peaks per line.
-% Accelerometer ROIs: N=10 KLT-tracked point peaks per ROI (not the
-% averaged-signal single peak), so the spread is real.
-jitterAmp = 0.08;
+% Background swarm of every individual point peak (grouped on x for context)
+jitterAmp = 0.12;
+hSc = [];
 for k = 1:nLines
     if k <= nOrigLines
         fp = peakStructPerPt(lineIdx{k});
@@ -815,65 +831,62 @@ for k = 1:nLines
         fp = peakAccPerKLT(:, k - nOrigLines);
     end
     xj = xc(k) + (rand(numel(fp),1) - 0.5) * 2 * jitterAmp;
-    scatter(ax, xj, fp, 28, [0.55 0.65 0.85], 'filled', ...
-        'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','none', ...
-        'HandleVisibility','off');
+    hh = scatter(ax, xj, fp, 36, [0.30 0.45 0.75], 'filled', ...
+        'MarkerFaceAlpha', 0.65, 'MarkerEdgeColor','k', 'LineWidth', 0.3);
+    if isempty(hSc), hSc = hh; end
 end
+hSc.DisplayName = sprintf('Individual point peaks (n = %d)', overallN);
 
-% Mean ± std markers (mean of per-point peaks)
-hErr = errorbar(ax, xc, peakStats.MeanPeakHz, peakStats.StdPeakHz, ...
-    'o', 'MarkerSize', 9, 'MarkerFaceColor',[0.10 0.30 0.75], ...
-    'MarkerEdgeColor','k', 'Color','k', 'LineWidth', 1.6, 'CapSize', 14, ...
-    'DisplayName','Mean \pm 1\sigma of per-point peaks');
-
-% Peak of the averaged PSD per line (cross-check, plotted as diamonds)
-hAvg = plot(ax, xc, peakStats.AvgPSDPeakHz, 'd', 'MarkerSize', 9, ...
-    'MarkerFaceColor', [0.85 0.4 0.05], 'MarkerEdgeColor', 'k', ...
-    'LineStyle', 'none', 'LineWidth', 1.0, ...
-    'DisplayName', 'Peak of averaged PSD (linear avg)');
+% Overall mean +/- 1 sigma band stretching across the whole plot
+xRange = [0.5, height(peakStats) + 0.5];
+hBand = fill(ax, [xRange fliplr(xRange)], ...
+    [overallMean-overallStd overallMean-overallStd overallMean+overallStd overallMean+overallStd], ...
+    [0.10 0.30 0.75], 'FaceAlpha', 0.18, 'EdgeColor','none', ...
+    'DisplayName', sprintf('Overall mean \\pm 1\\sigma (n = %d)', overallN));
+hMean = yline(ax, overallMean, '-', ...
+    'LineWidth', 2.5, 'Color', [0.10 0.30 0.75], ...
+    'DisplayName', sprintf('Overall mean = %.4f Hz', overallMean));
 
 % Accelerometer reference + shaded ±0.1 Hz tolerance
 if ~isempty(accelTargetHz) && isfinite(accelTargetHz)
     tolHz = 0.1;
-    xRange = [0.5, height(peakStats)+0.5];
     hTol = fill(ax, [xRange fliplr(xRange)], ...
         [accelTargetHz-tolHz accelTargetHz-tolHz accelTargetHz+tolHz accelTargetHz+tolHz], ...
-        [0.05 0.3 0.85], 'FaceAlpha', 0.10, 'EdgeColor','none', ...
+        [0.85 0.30 0.10], 'FaceAlpha', 0.08, 'EdgeColor','none', ...
         'DisplayName', sprintf('Accel \\pm %.1f Hz', tolHz));
-    hAcc = yline(ax, accelTargetHz, '-', ...
-        'LineWidth', 2.0, 'Color', [0.05 0.3 0.85], ...
+    hAcc = yline(ax, accelTargetHz, '--', ...
+        'LineWidth', 2.0, 'Color', [0.75 0.10 0.10], ...
         'DisplayName', sprintf('Accel = %.2f Hz', accelTargetHz));
 end
 
-% Numeric labels (mean ± std) and absolute error vs accel
-for k = 1:nLines
-    mu = peakStats.MeanPeakHz(k);
-    sd = peakStats.StdPeakHz(k);
-    if ~isempty(accelTargetHz)
-        errPct = 100 * abs(mu - accelTargetHz) / accelTargetHz;
-        lbl = sprintf('%.3f \\pm %.3f Hz\n(err %.2f%%)', mu, sd, errPct);
-    else
-        lbl = sprintf('%.3f \\pm %.3f Hz', mu, sd);
-    end
-    text(ax, xc(k), mu + sd + 0.015, lbl, ...
-        'HorizontalAlignment','center', 'VerticalAlignment','bottom', ...
-        'FontSize', 9, 'FontWeight','bold', 'Color',[0.10 0.30 0.75]);
+% One big numeric label for the overall statistic
+if ~isempty(accelTargetHz)
+    lblTxt = sprintf('OVERALL: %.4f \\pm %.4f Hz   (n = %d)   error vs accel: %.2f%%', ...
+        overallMean, overallStd, overallN, overallErrPct);
+else
+    lblTxt = sprintf('OVERALL: %.4f \\pm %.4f Hz   (n = %d)', overallMean, overallStd, overallN);
 end
 
-% Tight y-range around the data + accel target
-allVals = [peakFreqPerPoint(:); accelTargetHz(:)];
+% Y range tight around data + accel target
+allVals = [peakFreqPerPoint(:); accelTargetHz(:); overallMean-overallStd; overallMean+overallStd];
 yLo = min(allVals,[],'omitnan');
 yHi = max(allVals,[],'omitnan');
 yPad = max(0.15, 0.4*(yHi - yLo));
 ylim(ax, [yLo - yPad, yHi + yPad]);
-xlim(ax, [0.5, height(peakStats) + 0.5]);
+xlim(ax, xRange);
 
 set(ax, 'XTick', xc, 'XTickLabel', peakStats.Line);
 ylabel(ax, 'Detected peak frequency [Hz]');
-title(ax, 'Per-point peak frequency: mean \pm 1\sigma (dots = individual points)', ...
-      'FontWeight','normal');
-legend(ax, 'Location','southoutside','Orientation','horizontal');
+title(ax, lblTxt, 'FontWeight','bold');
+legend(ax, 'Location','southoutside','Orientation','horizontal','NumColumns',2);
 saveHQ(figS, '07_peak_mean_std');
+
+% Append OVERALL row to the peak statistics CSV
+overallRow = table("OVERALL", overallN, overallMean, overallStd, ...
+    min(allPeaks), max(allPeaks), paraPeakHz(Pglobal, f, magBand), findpeaksPeakHz(Pglobal, f, magBand), ...
+    'VariableNames', peakStats.Properties.VariableNames);
+peakStatsAll = [peakStats; overallRow];
+writetable(peakStatsAll, fullfile(outputDir, 'peak_statistics_mean_std.csv'));
 
 %% ===================== PLOT 8: CPSD magnitude + phase + coherence
 if hasPairs
@@ -1002,6 +1015,11 @@ fprintf('\nPer-line peak (mean ± std):\n');
 for k = 1:nLines
     fprintf('  %-20s  %.3f ± %.3f Hz   (avg-PSD peak %.3f Hz)\n', ...
         peakStats.Line(k), peakStats.MeanPeakHz(k), peakStats.StdPeakHz(k), peakStats.AvgPSDPeakHz(k));
+end
+fprintf('  %-20s  %.4f ± %.4f Hz   (n=%d)\n', ...
+    'OVERALL (pooled)', overallMean, overallStd, overallN);
+if ~isempty(accelTargetHz)
+    fprintf('  Error vs accelerometer (%.2f Hz): %.3f%%\n', accelTargetHz, overallErrPct);
 end
 if hasPairs
     fprintf('\nCross-correlation lag/phase at peak (%.3f Hz):\n', peakForXC);
