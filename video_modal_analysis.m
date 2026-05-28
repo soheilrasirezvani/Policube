@@ -832,9 +832,12 @@ for k = 1:nLines
     end
     xj = xc(k) + (rand(numel(fp),1) - 0.5) * 2 * jitterAmp;
     hh = scatter(ax, xj, fp, 36, [0.30 0.45 0.75], 'filled', ...
-        'MarkerFaceAlpha', 0.65, 'MarkerEdgeColor','k', 'LineWidth', 0.3);
+        'MarkerFaceAlpha', 0.65, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
+        'HandleVisibility','off');
     if isempty(hSc), hSc = hh; end
 end
+% Single legend entry for all individual point peaks
+hSc.HandleVisibility = 'on';
 hSc.DisplayName = sprintf('Individual point peaks (n = %d)', overallN);
 
 % Overall mean +/- 1 sigma band stretching across the whole plot
@@ -876,6 +879,7 @@ ylim(ax, [yLo - yPad, yHi + yPad]);
 xlim(ax, xRange);
 
 set(ax, 'XTick', xc, 'XTickLabel', peakStats.Line);
+xlabel(ax, 'Tracking group (structural line / accelerometer pattern)');
 ylabel(ax, 'Detected peak frequency [Hz]');
 title(ax, lblTxt, 'FontWeight','bold');
 legend(ax, 'Location','southoutside','Orientation','horizontal','NumColumns',2);
