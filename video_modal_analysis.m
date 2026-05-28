@@ -329,74 +329,74 @@ else
     Pglobal = mean(Pline, 2, 'omitnan');
 end
 
-%% ===================== PEAK DETECTION (per point + per line) =====
+%% ===================== PEAK DETECTION (consistent rule) ==========
+% ONE rule everywhere:
+%   peak = bin of max(PSD_dB) within magBand, refined to sub-bin
+%          precision with a 3-point parabolic fit.
+% Applied identically to:
+%   (a) every individual point PSD          -> peakStructPerPt / peakAccPerKLT
+%   (b) every per-line averaged PSD         -> peakStats.AvgPSDPeakHz
+%   (c) the global average PSD              -> globalPeakHz
+% A secondary findpeaks-based estimate is computed too and stored as
+% peakStats.AvgPSDPeakHz_FP so any disagreement is visible.
+
 bandIdx = f >= magBand(1) & f <= magBand(2);
 f_band  = f(bandIdx);
 nBins   = numel(f_band);
-df      = f(2) - f(1);
-minPeakDist = min(round(0.5 / df), max(1, nBins - 2));
+df_bin  = f(2) - f(1);
 
-peakFreqPerPoint = nan(nPts, 1);
-for j = 1:nPts
-    Pband   = Pxx(bandIdx, j);
-    PbanddB = 10*log10(max(Pband, eps));
-    if nBins < 3
-        [~, im] = max(PbanddB);
-        peakFreqPerPoint(j) = f_band(im);
-    else
-        [~, locs] = findpeaks(PbanddB, 'MinPeakDistance', minPeakDist, 'MinPeakProminence', 1);
-        if isempty(locs)
-            [~, im] = max(PbanddB); peakFreqPerPoint(j) = f_band(im);
-        else
-            [~, best] = max(PbanddB(locs)); peakFreqPerPoint(j) = f_band(locs(best));
-        end
+% Per-KLT-point peaks for accelerometer ROIs (real std, not 0.000)
+peakAccPerKLT = nan(N, nPat);
+for kk = 1:nPat
+    for jj = 1:N
+        col = (kk-1)*N + jj;
+        peakAccPerKLT(jj, kk) = paraPeakHz(Pacc_pp(:, col), f, magBand);
     end
 end
 
-% Per-line mean ± std of the per-point peaks (this is the statistic you wanted)
-peakStats = table('Size', [nLines 5], ...
-    'VariableTypes', {'string','double','double','double','double'}, ...
-    'VariableNames', {'Line','MeanPeakHz','StdPeakHz','MinPeakHz','MaxPeakHz'});
+% Per-point peaks on structural lines (Pxx columns 1..nStructPts)
+peakStructPerPt = nan(nStructPts, 1);
+for j = 1:nStructPts
+    peakStructPerPt(j) = paraPeakHz(Pxx(:, j), f, magBand);
+end
+
+% Aggregate per-line peak statistics (mean ± std across point peaks)
+peakStats = table('Size', [nLines 8], ...
+    'VariableTypes', {'string','double','double','double','double','double','double','double'}, ...
+    'VariableNames', {'Line','nPoints','MeanPeakHz','StdPeakHz','MinPeakHz','MaxPeakHz','AvgPSDPeakHz','AvgPSDPeakHz_FP'});
 for k = 1:nLines
-    fp = peakFreqPerPoint(lineIdx{k});
-    peakStats.Line(k)        = string(lineLabels{k});
-    peakStats.MeanPeakHz(k)  = mean(fp, 'omitnan');
-    peakStats.StdPeakHz(k)   = std(fp, 0, 'omitnan');
-    peakStats.MinPeakHz(k)   = min(fp);
-    peakStats.MaxPeakHz(k)   = max(fp);
-end
-
-% Per-line peak from the AVERAGED line PSD
-linePeaks = nan(nLines, 1);
-for k = 1:nLines
-    Pband   = Pline(bandIdx, k);
-    PbanddB = 10*log10(max(Pband, eps));
-    if nBins < 3
-        [~, im] = max(PbanddB); linePeaks(k) = f_band(im);
+    if k <= nOrigLines
+        fp = peakStructPerPt(lineIdx{k});
     else
-        [~, locs] = findpeaks(PbanddB, 'MinPeakDistance', minPeakDist, 'MinPeakProminence', 2);
-        if isempty(locs)
-            [~, im] = max(PbanddB); linePeaks(k) = f_band(im);
-        else
-            [~, best] = max(PbanddB(locs)); linePeaks(k) = f_band(locs(best));
-        end
+        fp = peakAccPerKLT(:, k - nOrigLines);
     end
+    peakStats.Line(k)             = string(lineLabels{k});
+    peakStats.nPoints(k)          = numel(fp);
+    peakStats.MeanPeakHz(k)       = mean(fp, 'omitnan');
+    peakStats.StdPeakHz(k)        = std(fp, 0, 'omitnan');
+    peakStats.MinPeakHz(k)        = min(fp);
+    peakStats.MaxPeakHz(k)        = max(fp);
+    peakStats.AvgPSDPeakHz(k)     = paraPeakHz(Pline(:,k), f, magBand);
+    peakStats.AvgPSDPeakHz_FP(k)  = findpeaksPeakHz(Pline(:,k), f, magBand);
 end
-peakStats.AvgPSDPeakHz = linePeaks;
+linePeaks = peakStats.AvgPSDPeakHz;
 
-% Global PSD peak
-PglobalBand = Pglobal(bandIdx);
-PglobalBanddB = 10*log10(max(PglobalBand, eps));
-if nBins < 3
-    [~, im] = max(PglobalBanddB); globalPeakFreqs = f_band(im);
-else
-    [~, glocs] = findpeaks(PglobalBanddB, 'MinPeakDistance', minPeakDist, 'MinPeakProminence', 2);
-    if isempty(glocs)
-        [~, im] = max(PglobalBanddB); globalPeakFreqs = f_band(im);
-    else
-        globalPeakFreqs = f_band(glocs);
-    end
-end
+% Global average PSD peak (the publication number)
+globalPeakHz    = paraPeakHz(Pglobal, f, magBand);
+globalPeakHz_FP = findpeaksPeakHz(Pglobal, f, magBand);
+globalPeakFreqs = globalPeakHz;
+
+% Flat per-point list used by the swarm plot
+peakFreqPerPoint = [peakStructPerPt; peakAccPerKLT(:)];
+
+% Diagnostic: peak of the mean vs mean of per-point peaks
+fprintf('\n===== PEAK DETECTION DIAGNOSTIC =====\n');
+fprintf('  bin width df = %.4f Hz  (fs/nfft)\n', df_bin);
+fprintf('  GLOBAL avg-PSD peak    : %.4f Hz  (findpeaks: %.4f Hz)\n', globalPeakHz, globalPeakHz_FP);
+fprintf('  GLOBAL mean of per-pt  : %.4f +/- %.4f Hz   (n=%d)\n', ...
+    mean(peakFreqPerPoint,'omitnan'), std(peakFreqPerPoint,0,'omitnan'), numel(peakFreqPerPoint));
+fprintf('  (If these disagree it is physics, not algorithm:\n');
+fprintf('   coherent peaks add in the average PSD, incoherent peaks average down.)\n');
 
 fprintf('\n===== PEAK STATISTICS PER LINE / PATTERN =====\n');
 disp(peakStats);
@@ -640,19 +640,32 @@ for k = 1:nLines
     figPSD = figure('Name',sprintf('PSD %s', lineLabels{k}),'Color','w', ...
         'Position',[80 80 1100 650]);
     ax = axes(figPSD); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
-    idx = lineIdx{k};
+
+    % Use per-KLT-point columns for accelerometer ROIs (not the
+    % single averaged signal) so the overlay shows the 10 real curves.
+    if k <= nOrigLines
+        Pcols   = Pxx(:, lineIdx{k});
+        ptPeaks = peakStructPerPt(lineIdx{k});
+    else
+        kk      = k - nOrigLines;
+        ptCols  = (kk-1)*N + (1:N);
+        Pcols   = Pacc_pp(:, ptCols);
+        ptPeaks = peakAccPerKLT(:, kk);
+    end
+    nCurves = size(Pcols, 2);
 
     % Individual PSDs (dotted lines)
-    hInd = gobjects(numel(idx),1);
-    for j = 1:numel(idx)
-        hInd(j) = semilogy(ax, f, max(Pxx(:,idx(j)), eps), ':', 'LineWidth', 1.0, ...
+    hInd = gobjects(nCurves,1);
+    for j = 1:nCurves
+        hInd(j) = semilogy(ax, f, max(Pcols(:,j), eps), ':', 'LineWidth', 1.0, ...
             'Color', [0.55 0.55 0.55 0.65]);
     end
 
-    % Mean ± 1*std band (in dB then converted back)
-    if numel(idx) > 1
-        mu = Pline_mean_dB(:,k);
-        sd = Pline_std_dB(:,k);
+    % Mean ± 1*std band (in dB then converted back) - re-compute from Pcols
+    if nCurves > 1
+        PcolsdB  = 10*log10(max(Pcols, eps));
+        mu = mean(PcolsdB, 2);
+        sd = std(PcolsdB, 0, 2);
         upper = 10.^((mu + sd)/10);
         lower = 10.^((mu - sd)/10);
         xfill = [f; flipud(f)];
@@ -662,12 +675,32 @@ for k = 1:nLines
     end
 
     % Bold black average
-    hAvg = semilogy(ax, f, max(Pline(:,k), eps), 'k-', 'LineWidth', 3.0);
+    Pavg = mean(Pcols, 2, 'omitnan');
+    hAvg = semilogy(ax, f, max(Pavg, eps), 'k-', 'LineWidth', 3.0);
 
-    % Auto-detected peak from the average curve
-    hPkA = xline(ax, linePeaks(k), 'r--', sprintf('video peak = %.2f Hz', linePeaks(k)), ...
+    % Per-point detected peaks as ticks on the bold average curve - so the
+    % user can SEE where each point's peak landed and judge the spread.
+    yAt = nan(nCurves, 1);
+    for j = 1:nCurves
+        if ~isnan(ptPeaks(j))
+            yAt(j) = interp1(f, max(Pavg, eps), ptPeaks(j), 'linear', 'extrap');
+        end
+    end
+    hPts = scatter(ax, ptPeaks, yAt, 55, [0.85 0.1 0.1], 'v', 'filled', ...
+        'MarkerEdgeColor','k', 'LineWidth', 0.5);
+
+    % Auto-detected peak from the averaged curve
+    peakAvgPSD = paraPeakHz(Pavg, f, magBand);
+    hPkA = xline(ax, peakAvgPSD, 'r--', sprintf('avg-PSD peak = %.3f Hz', peakAvgPSD), ...
         'LineWidth', 1.6, 'LabelOrientation','horizontal', ...
         'LabelVerticalAlignment','top', 'Color',[0.85 0.1 0.1]);
+
+    % Mean of per-point peaks (different statistic - shown so the gap
+    % between "peak of mean" and "mean of peaks" is visible)
+    muPt = mean(ptPeaks, 'omitnan');
+    hPkM = xline(ax, muPt, ':', sprintf('mean of pt-peaks = %.3f Hz', muPt), ...
+        'LineWidth', 1.4, 'Color', [0.5 0 0.6], ...
+        'LabelOrientation','horizontal', 'LabelVerticalAlignment','middle');
 
     % Accelerometer reference (ground truth)
     if ~isempty(accelTargetHz) && isfinite(accelTargetHz)
@@ -682,21 +715,26 @@ for k = 1:nLines
     ylabel(ax, 'PSD [px^{2}/Hz]');
     mu_pk = peakStats.MeanPeakHz(k);
     sd_pk = peakStats.StdPeakHz(k);
-    title(ax, sprintf('%s   |   per-point peak: %.3f \\pm %.3f Hz  (avg-PSD peak: %.3f Hz)', ...
-        lineLabels{k}, mu_pk, sd_pk, linePeaks(k)), 'FontWeight','normal');
+    title(ax, sprintf('%s   |   mean of per-pt peaks: %.3f \\pm %.3f Hz   |   peak of avg PSD: %.3f Hz', ...
+        lineLabels{k}, mu_pk, sd_pk, peakAvgPSD), 'FontWeight','normal');
 
-    leg = {sprintf('Individual PSDs (n = %d)', numel(idx)), ...
+    leg = {sprintf('Individual PSDs (n = %d)', nCurves), ...
            'Mean \pm 1\sigma band', ...
            'Average PSD (bold)', ...
-           'Detected peak (video)'};
+           'Per-point detected peaks', ...
+           'Peak of averaged PSD', ...
+           'Mean of per-point peaks'};
+    handles = [hInd(1), hAvg, hPts, hPkA, hPkM];
+    legLabs = leg([1 3 4 5 6]);
+    if nCurves > 1
+        handles = [hInd(1), hBand, hAvg, hPts, hPkA, hPkM];
+        legLabs = leg;
+    end
     if ~isempty(accelTargetHz)
-        leg{end+1} = 'Accelerometer reference';
+        handles(end+1) = hPkB;
+        legLabs{end+1} = 'Accelerometer reference';
     end
-    if numel(idx) > 1
-        legend(ax, [hInd(1), hBand, hAvg, hPkA, hPkB], leg, 'Location','northeast');
-    else
-        legend(ax, [hInd(1), hAvg, hPkA, hPkB], leg([1 3 4 5]), 'Location','northeast');
-    end
+    legend(ax, handles, legLabs, 'Location','northeast');
     saveHQ(figPSD, sprintf('04_PSD_overlay_%s', matlab.lang.makeValidName(lineLabels{k})));
 end
 
@@ -766,20 +804,33 @@ ax = axes(figS); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc = 1:height(peakStats);
 
 % Background swarm of individual point peaks
+% Structural lines: N=10 NCC-tracked point peaks per line.
+% Accelerometer ROIs: N=10 KLT-tracked point peaks per ROI (not the
+% averaged-signal single peak), so the spread is real.
 jitterAmp = 0.08;
 for k = 1:nLines
-    fp = peakFreqPerPoint(lineIdx{k});
+    if k <= nOrigLines
+        fp = peakStructPerPt(lineIdx{k});
+    else
+        fp = peakAccPerKLT(:, k - nOrigLines);
+    end
     xj = xc(k) + (rand(numel(fp),1) - 0.5) * 2 * jitterAmp;
     scatter(ax, xj, fp, 28, [0.55 0.65 0.85], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','none', ...
         'HandleVisibility','off');
 end
 
-% Mean ± std markers
+% Mean ± std markers (mean of per-point peaks)
 hErr = errorbar(ax, xc, peakStats.MeanPeakHz, peakStats.StdPeakHz, ...
     'o', 'MarkerSize', 9, 'MarkerFaceColor',[0.10 0.30 0.75], ...
     'MarkerEdgeColor','k', 'Color','k', 'LineWidth', 1.6, 'CapSize', 14, ...
-    'DisplayName','Mean \pm 1\sigma');
+    'DisplayName','Mean \pm 1\sigma of per-point peaks');
+
+% Peak of the averaged PSD per line (cross-check, plotted as diamonds)
+hAvg = plot(ax, xc, peakStats.AvgPSDPeakHz, 'd', 'MarkerSize', 9, ...
+    'MarkerFaceColor', [0.85 0.4 0.05], 'MarkerEdgeColor', 'k', ...
+    'LineStyle', 'none', 'LineWidth', 1.0, ...
+    'DisplayName', 'Peak of averaged PSD (linear avg)');
 
 % Accelerometer reference + shaded ±0.1 Hz tolerance
 if ~isempty(accelTargetHz) && isfinite(accelTargetHz)
@@ -960,3 +1011,47 @@ if hasPairs
     end
 end
 fprintf('\nResults saved to: %s\n', outputDir);
+
+%% ===================== LOCAL FUNCTIONS ===========================
+function fpk = paraPeakHz(P, f, band)
+    % Peak frequency = argmax of dB-PSD within [band(1),band(2)] refined
+    % to sub-bin resolution with a 3-point parabolic fit.
+    bandIdx = f >= band(1) & f <= band(2);
+    fb = f(bandIdx);
+    Pb = P(bandIdx);
+    if isempty(Pb), fpk = NaN; return; end
+    PbdB = 10*log10(max(Pb, eps));
+    [~, im] = max(PbdB);
+    if im > 1 && im < numel(PbdB)
+        y0 = PbdB(im-1); y1 = PbdB(im); y2 = PbdB(im+1);
+        denom = (y0 - 2*y1 + y2);
+        if abs(denom) > 1e-12
+            delta = 0.5 * (y0 - y2) / denom;       % bin offset in [-0.5, 0.5]
+            delta = max(min(delta, 0.5), -0.5);
+        else
+            delta = 0;
+        end
+        dfb = fb(2) - fb(1);
+        fpk = fb(im) + delta * dfb;
+    else
+        fpk = fb(im);
+    end
+end
+
+function fpk = findpeaksPeakHz(P, f, band)
+    % Cross-check estimator: tallest findpeaks() peak inside the band.
+    bandIdx = f >= band(1) & f <= band(2);
+    fb = f(bandIdx);
+    Pb = P(bandIdx);
+    if isempty(Pb), fpk = NaN; return; end
+    PbdB = 10*log10(max(Pb, eps));
+    if numel(PbdB) < 3
+        [~, im] = max(PbdB); fpk = fb(im); return;
+    end
+    [~, locs] = findpeaks(PbdB, 'MinPeakProminence', 1);
+    if isempty(locs)
+        [~, im] = max(PbdB); fpk = fb(im);
+    else
+        [~, best] = max(PbdB(locs)); fpk = fb(locs(best));
+    end
+end
