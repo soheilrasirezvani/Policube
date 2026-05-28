@@ -757,20 +757,71 @@ if nAccPts > 0
     saveHQ(figAP, '06_acc_klt_PSDs_single_plot');
 end
 
-%% ===================== PLOT 7: Peak statistics bar chart =========
-figS = figure('Name','Peak mean ± std per line','Color','w','Position',[80 80 900 500]);
+%% ===================== PLOT 7: Peak statistics dot+error plot ====
+% Marker + errorbar (not a bar chart) with a tight y-range around the
+% accelerometer reference, individual point peaks shown as light dots,
+% and numeric mean ± std labels next to each entry.
+figS = figure('Name','Peak mean +/- std per line','Color','w','Position',[80 80 1000 560]);
 ax = axes(figS); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc = 1:height(peakStats);
-bar(ax, xc, peakStats.MeanPeakHz, 0.6, 'FaceColor',[0.4 0.6 0.85], 'EdgeColor','k');
-errorbar(ax, xc, peakStats.MeanPeakHz, peakStats.StdPeakHz, 'k', ...
-    'LineStyle','none','LineWidth',1.5,'CapSize',12);
-if ~isempty(accelTargetHz)
-    yline(ax, accelTargetHz, '-', sprintf('accel = %.2f Hz', accelTargetHz), ...
-        'LineWidth',2,'Color',[0.05 0.3 0.85], 'LabelHorizontalAlignment','left');
+
+% Background swarm of individual point peaks
+jitterAmp = 0.08;
+for k = 1:nLines
+    fp = peakFreqPerPoint(lineIdx{k});
+    xj = xc(k) + (rand(numel(fp),1) - 0.5) * 2 * jitterAmp;
+    scatter(ax, xj, fp, 28, [0.55 0.65 0.85], 'filled', ...
+        'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','none', ...
+        'HandleVisibility','off');
 end
-set(ax,'XTick',xc,'XTickLabel',peakStats.Line);
-ylabel(ax,'Detected peak frequency [Hz]');
-title(ax,'Per-point peak frequency: mean \pm 1\sigma','FontWeight','normal');
+
+% Mean ± std markers
+hErr = errorbar(ax, xc, peakStats.MeanPeakHz, peakStats.StdPeakHz, ...
+    'o', 'MarkerSize', 9, 'MarkerFaceColor',[0.10 0.30 0.75], ...
+    'MarkerEdgeColor','k', 'Color','k', 'LineWidth', 1.6, 'CapSize', 14, ...
+    'DisplayName','Mean \pm 1\sigma');
+
+% Accelerometer reference + shaded ±0.1 Hz tolerance
+if ~isempty(accelTargetHz) && isfinite(accelTargetHz)
+    tolHz = 0.1;
+    xRange = [0.5, height(peakStats)+0.5];
+    hTol = fill(ax, [xRange fliplr(xRange)], ...
+        [accelTargetHz-tolHz accelTargetHz-tolHz accelTargetHz+tolHz accelTargetHz+tolHz], ...
+        [0.05 0.3 0.85], 'FaceAlpha', 0.10, 'EdgeColor','none', ...
+        'DisplayName', sprintf('Accel \\pm %.1f Hz', tolHz));
+    hAcc = yline(ax, accelTargetHz, '-', ...
+        'LineWidth', 2.0, 'Color', [0.05 0.3 0.85], ...
+        'DisplayName', sprintf('Accel = %.2f Hz', accelTargetHz));
+end
+
+% Numeric labels (mean ± std) and absolute error vs accel
+for k = 1:nLines
+    mu = peakStats.MeanPeakHz(k);
+    sd = peakStats.StdPeakHz(k);
+    if ~isempty(accelTargetHz)
+        errPct = 100 * abs(mu - accelTargetHz) / accelTargetHz;
+        lbl = sprintf('%.3f \\pm %.3f Hz\n(err %.2f%%)', mu, sd, errPct);
+    else
+        lbl = sprintf('%.3f \\pm %.3f Hz', mu, sd);
+    end
+    text(ax, xc(k), mu + sd + 0.015, lbl, ...
+        'HorizontalAlignment','center', 'VerticalAlignment','bottom', ...
+        'FontSize', 9, 'FontWeight','bold', 'Color',[0.10 0.30 0.75]);
+end
+
+% Tight y-range around the data + accel target
+allVals = [peakFreqPerPoint(:); accelTargetHz(:)];
+yLo = min(allVals,[],'omitnan');
+yHi = max(allVals,[],'omitnan');
+yPad = max(0.15, 0.4*(yHi - yLo));
+ylim(ax, [yLo - yPad, yHi + yPad]);
+xlim(ax, [0.5, height(peakStats) + 0.5]);
+
+set(ax, 'XTick', xc, 'XTickLabel', peakStats.Line);
+ylabel(ax, 'Detected peak frequency [Hz]');
+title(ax, 'Per-point peak frequency: mean \pm 1\sigma (dots = individual points)', ...
+      'FontWeight','normal');
+legend(ax, 'Location','southoutside','Orientation','horizontal');
 saveHQ(figS, '07_peak_mean_std');
 
 %% ===================== PLOT 8: CPSD magnitude + phase + coherence
