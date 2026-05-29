@@ -1,33 +1,17 @@
-% =========================================================================
-% Video-based modal analysis for the Policube experiment
-% -------------------------------------------------------------------------
-% Pipeline (read top-to-bottom):
-%   1. Load video, draw structural lines and accelerometer ROIs on frame 1
-%   2. Track points: NCC for line points, KLT for accelerometer ROIs
-%   3. Extract Y-displacement time histories in pixels
-%   4. Crop to the active time window and compute the periodogram PSD
-%      (no zero padding, df = fs / N_window)
-%   5. Bin-snap peak detection in the search band
-%   6. Cross-spectrum (magnitude + phase) and time-domain cross-correlation
-%      between accelerometer ROIs
-%   7. Save figures + CSV tables to Desktop\PolicubeResults_<timestamp>
-% =========================================================================
-
 clear; clc; close all;
 
 %% ----- USER CONFIG -------------------------------------------------------
 videoFile = "D:\dronebasedVMM\Deep-Motion-Mag-Pytorch-main\Rightview-lab-final\9.5-10.5Hz\output_frames_P02m_30_fl9.5_fh10.5_fs60.0_n4_butter.mp4";
 
-% Each entry = one structural portion (mouse-drawn line on frame 1)
-lineLabels         = {'1st landing','Lower flight','2nd landing','3rd landing'};
-% Each entry = one accelerometer ROI (mouse-drawn rectangle on frame 1)
+lineLabels         = {'1st landing','2nd landing'};
+
 accelPatternLabels = {'acc0','acc1','acc2','acc3'};
-nPointsPerLine     = 10;     % points distributed along each line / per ROI
+nPointsPerLine     = 5;
 
 % Modal analysis settings
-analysisWindow = [1 4];      % seconds, the segment where the structure rings
+analysisWindow = [0 5];      % seconds, the segment where the structure rings
 magBand        = [9 11];     % Hz, peak search band (matches the magnification)
-accelTargetHz  = 10.3;       % Hz, accelerometer ground-truth frequency
+accelTargetHz  = 10.2;       % Hz, accelerometer ground-truth frequency
 spectraXLim    = [8 19];     % Hz, x-axis for spectra plots
 
 % Output folder on the Desktop (timestamped so runs don't overwrite)
@@ -50,13 +34,13 @@ nPat    = numel(accelPatternLabels);
 N       = nPointsPerLine;
 clrAll  = lines(nLines + nPat);
 
-figure('Name','Setup','Color','w','NumberTitle','off');
+figure('Name','Setup', 'color', 'w','NumberTitle','off');
 imshow(firstFrame); hold on;
 
 lineCoords = zeros(nLines, 4);   % [x1 y1 x2 y2]
 for k = 1:nLines
     title(sprintf('Draw line %d/%d: %s', k, nLines, lineLabels{k}));
-    h = drawline('Color', clrAll(k,:), 'LineWidth', 2);
+    h = drawline('Color', 'w', 'LineWidth', 2);
     wait(h);
     lineCoords(k,:) = [h.Position(1,:) h.Position(2,:)];
 end
@@ -72,7 +56,7 @@ for k = 1:nLines
     ys   = lineCoords(k,2) + s * (lineCoords(k,4) - lineCoords(k,2));
     idx  = (k-1)*N + (1:N);
     pts0(idx,:) = [xs ys];
-    plot(xs, ys, 'o', 'Color', clrAll(k,:), 'MarkerFaceColor', clrAll(k,:));
+    plot(xs, ys, 'o', 'Color', 'w', 'MarkerFaceColor', 'w');
     for j = idx
         cx = round(pts0(j,1));  cy = round(pts0(j,2));
         r1 = max(1, cy-halfPatch);  r2 = min(size(firstGray,1), cy+halfPatch);
@@ -84,26 +68,28 @@ end
 %% ----- DRAW ACCELEROMETER ROIs (mouse) ----------------------------------
 patternRects = zeros(nPat, 4);
 accelPts0    = zeros(0, 2);
+nFeatsFound  = zeros(nPat, 1);    % how many real corners each ROI gave us
 for k = 1:nPat
     title(sprintf('Draw rectangle %d/%d: %s', k, nPat, accelPatternLabels{k}));
-    hR = drawrectangle('Color', clrAll(nLines+k,:), 'LineWidth', 1.8);
+    hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
     wait(hR);
     patternRects(k,:) = hR.Position;
     roi = round(patternRects(k,:));
     feats = detectMinEigenFeatures(firstGray, 'ROI', roi, 'MinQuality', 0.005);
-    if size(feats.Location,1) >= N
+    nFeatsFound(k) = size(feats.Location, 1);
+    if nFeatsFound(k) >= N
         [~, ord] = sort(feats.Metric, 'descend');
         sel = feats.Location(ord(1:N), :);
     else
         cx = roi(1) + roi(3)/2;  cy = roi(2) + roi(4)/2;
-        sel = [feats.Location; repmat([cx cy], N-size(feats.Location,1), 1)];
-        warning('ROI %s: only %d corners found, padded with ROI center.', ...
-            accelPatternLabels{k}, size(feats.Location,1));
+        sel = [feats.Location; repmat([cx cy], N-nFeatsFound(k), 1)];
+        warning('ROI %s: only %d real corners found (need %d), padded with ROI center.', ...
+            accelPatternLabels{k}, nFeatsFound(k), N);
     end
     accelPts0 = [accelPts0; sel];
-    rectangle('Position', roi, 'EdgeColor', clrAll(nLines+k,:), 'LineWidth', 1.5);
-    plot(sel(:,1), sel(:,2), 's', 'Color', clrAll(nLines+k,:), ...
-         'MarkerFaceColor', clrAll(nLines+k,:));
+    rectangle('Position', roi, 'EdgeColor', 'r', 'LineWidth', 1.5);
+    plot(sel(:,1), sel(:,2), 's', 'Color', 'r', ...
+         'MarkerFaceColor', 'r');
 end
 title('Tracking points placed'); drawnow;
 exportgraphics(gcf, fullfile(outputDir,'01_tracked_points.png'), 'Resolution', 300);
@@ -225,6 +211,26 @@ fprintf('  Global peak (avg PSD)   : %.4f Hz  (vs accel %.2f Hz: %.2f%% error)\n
     peakGlobal, accelTargetHz, errPct);
 fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d)\n', ...
     muPeak, sdPeak, numel(peakAllPts));
+
+%% ----- ROI QUALITY DIAGNOSTIC --------------------------------------------
+% A "trustworthy" ROI has a strong peak in magBand relative to its noise
+% floor. SNR = peak_PSD / median_PSD (linear ratio).  A peak that is only
+% marginally above the median is just the loudest bin of noise.
+fprintf('\n===== ROI SIGNAL QUALITY (peak / median PSD) =====\n');
+snrFloor = 100;   % below this we flag the ROI as untrustworthy
+for k = 1:nPat
+    Pk    = Pacc(:, k);
+    snrK  = max(Pk(bandIdx)) / median(Pk(bandIdx));
+    flag  = '';
+    if nFeatsFound(k) < N
+        flag = sprintf(' [only %d/%d corners]', nFeatsFound(k), N);
+    end
+    if snrK < snrFloor
+        flag = [flag, '  <-- LOW SNR, peak likely an artefact'];
+    end
+    fprintf('  %-6s  peak/median = %8.1f   peak = %.3f Hz%s\n', ...
+        accelPatternLabels{k}, snrK, peakPerLine(nLines+k), flag);
+end
 
 %% ----- CROSS-SPECTRUM (magnitude + phase) between accel ROIs ------------
 patSig = detrend(Y_acc(tMask, :), 1);
