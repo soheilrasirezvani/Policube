@@ -67,22 +67,70 @@ end
 % template per point. A multi-segment polyline lets one portion follow a
 % staircase corner; adjacent portions share endpoints when the user
 % (or the snap above) places them on the same pixel.
-nStructPts = nLines * N;
+% Every polyline VERTEX is guaranteed to be a tracked point (the joints
+% between sections are structurally meaningful for the mode shape).
+% Each portion then gets max(N, M_k) total points: the M_k vertices plus
+% extra points distributed along the segments proportionally to length.
+linePtCount = zeros(nLines, 1);
+lineIdx     = cell(nLines, 1);
+ptr = 0;
+for k = 1:nLines
+    M = size(lineVerts{k}, 1);
+    Nk = max(N, M);
+    linePtCount(k) = Nk;
+    lineIdx{k}     = ptr + (1:Nk);
+    ptr = ptr + Nk;
+end
+nStructPts = ptr;
 pts0       = zeros(nStructPts, 2);
 lineTmpl   = cell(nStructPts, 1);
+isJoint    = false(nStructPts, 1);   % true where pts0(j) is a polyline vertex
 halfPatch  = 20;     % half-size of the line-point template (px) -> 41x41
+
 for k = 1:nLines
-    verts = lineVerts{k};
+    verts  = lineVerts{k};
+    M      = size(verts, 1);
+    Nk     = linePtCount(k);
     segLen = hypot(diff(verts(:,1)), diff(verts(:,2)));
     cumL   = [0; cumsum(segLen)];
     totalL = cumL(end);
-    sTarget = linspace(0, totalL, N).';
+
+    if Nk == M
+        sTarget = cumL;             % only vertices fit
+    else
+        % Distribute (Nk - M) extra points to segments in proportion to
+        % their length, then place them evenly inside each segment.
+        nExtra  = Nk - M;
+        ideal   = nExtra * segLen / totalL;
+        nPerSeg = floor(ideal);
+        leftover = nExtra - sum(nPerSeg);
+        [~, ord] = sort(ideal - nPerSeg, 'descend');
+        nPerSeg(ord(1:leftover)) = nPerSeg(ord(1:leftover)) + 1;
+
+        sTarget = cumL;             % anchor at every vertex
+        for s = 1:numel(nPerSeg)
+            if nPerSeg(s) > 0
+                xs = linspace(cumL(s), cumL(s+1), nPerSeg(s)+2);
+                sTarget = [sTarget; xs(2:end-1).'];   % interior of segment
+            end
+        end
+        sTarget = sort(sTarget);
+    end
+
     xs = interp1(cumL, verts(:,1), sTarget);
     ys = interp1(cumL, verts(:,2), sTarget);
-    idx = (k-1)*N + (1:N);
+    idx = lineIdx{k};
     pts0(idx,:) = [xs ys];
+
+    % Mark which of these points coincide with a polyline vertex (joint).
+    isJoint(idx) = ismembertol(sTarget, cumL, 1e-9);
+
     plot(verts(:,1), verts(:,2), '-', 'Color', 'w', 'LineWidth', 1.5);
     plot(xs, ys, 'o', 'Color', 'w', 'MarkerFaceColor', 'w');
+    % Make joints visually distinct on the setup figure (larger diamond)
+    plot(xs(isJoint(idx)), ys(isJoint(idx)), 'd', ...
+        'Color', 'y', 'MarkerFaceColor', 'y', 'MarkerSize', 10);
+
     for j = idx
         cx = round(pts0(j,1));  cy = round(pts0(j,2));
         r1 = max(1, cy-halfPatch);  r2 = min(size(firstGray,1), cy+halfPatch);
@@ -90,6 +138,8 @@ for k = 1:nLines
         lineTmpl{j} = firstGray(r1:r2, c1:c2);
     end
 end
+fprintf('Structural points: %d total (%s) - joints anchored at every polyline vertex\n', ...
+    nStructPts, strjoin(arrayfun(@(x) sprintf('%d',x), linePtCount(:).', 'UniformOutput', false), '+'));
 
 %% ----- DRAW ACCELEROMETER RECTANGLES (one NCC template per ROI) ---------
 accRect = zeros(nPat, 4);
@@ -219,7 +269,7 @@ fprintf('Analysis window: %.2f-%.2f s (%d samples, df = %.4f Hz)\n', ...
 
 Pline = zeros(numel(f), nLines + nPat);
 for k = 1:nLines
-    Pline(:, k) = mean(Pxx(:, (k-1)*N + (1:N)), 2);
+    Pline(:, k) = mean(Pxx(:, lineIdx{k}), 2);
 end
 for k = 1:nPat
     Pline(:, nLines+k) = Pacc(:, k);
@@ -363,8 +413,11 @@ groupLabels = [string(lineLabels), string(accelPatternLabels)];
 
 colNames = strings(1, nStructPts + nPat);
 for k = 1:nLines
-    for j = 1:N
-        colNames((k-1)*N + j) = sprintf('%s_P%d', matlab.lang.makeValidName(lineLabels{k}), j);
+    Nk = linePtCount(k);
+    for j = 1:Nk
+        suffix = "_P" + j;
+        if isJoint(lineIdx{k}(j)), suffix = "_J" + j; end   % J flags a joint
+        colNames(lineIdx{k}(j)) = string(matlab.lang.makeValidName(lineLabels{k})) + suffix;
     end
 end
 for k = 1:nPat
@@ -375,7 +428,7 @@ writetable(THtbl, fullfile(outputDir,'time_histories_Y_px.csv'));
 
 ppGroup = strings(numel(peakAllPts), 1);
 for k = 1:nLines
-    ppGroup((k-1)*N + (1:N)) = string(lineLabels{k});
+    ppGroup(lineIdx{k}) = string(lineLabels{k});
 end
 for k = 1:nPat
     ppGroup(nStructPts + k) = string(accelPatternLabels{k});
@@ -397,7 +450,7 @@ writetable(table(pairNames(:), bestLag, bestPhase, ...
 % Mode shape (reference + deflected pixel coordinates per point)
 msGroup = strings(nStructPts, 1);
 for k = 1:nLines
-    msGroup((k-1)*N + (1:N)) = string(lineLabels{k});
+    msGroup(lineIdx{k}) = string(lineLabels{k});
 end
 writetable(table(msGroup, xRef, yRef, dx, dy, xDef, yDef, ...
     'VariableNames', {'Group','xRef_px','yRef_px','dx_px','dy_px','xDef_px','yDef_px'}), ...
@@ -412,7 +465,7 @@ tl = tiledlayout(nLines+nPat, 1, 'TileSpacing','compact','Padding','compact');
 title(tl, 'Y-displacement time histories', 'FontWeight','bold');
 for k = 1:nLines
     nexttile; hold on; grid on; box on;
-    sig = Y_struct(:, (k-1)*N + (1:N));
+    sig = Y_struct(:, lineIdx{k});
     plot(t, sig);
     xline(analysisWindow(1), 'k:', 'HandleVisibility','off');
     xline(analysisWindow(2), 'k:', 'HandleVisibility','off');
@@ -437,7 +490,7 @@ for k = 1:(nLines + nPat)
     ax = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 
     if k <= nLines
-        Pcols   = Pxx(:, (k-1)*N + (1:N));
+        Pcols   = Pxx(:, lineIdx{k});
         hInd    = semilogy(ax, f, max(Pcols, eps), ':', 'LineWidth', 1.0, 'Color',[0.55 0.55 0.55]);
         Pavg    = mean(Pcols, 2);
         nCurves = size(Pcols, 2);
@@ -479,8 +532,8 @@ ax  = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc  = 1:(nLines+nPat);
 hSc = [];
 for k = 1:nLines
-    fp = peakStructPP((k-1)*N + (1:N));
-    hh = scatter(ax, k*ones(N,1), fp, 50, [0.30 0.45 0.75], 'filled', ...
+    fp = peakStructPP(lineIdx{k});
+    hh = scatter(ax, k*ones(numel(fp),1), fp, 50, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
     if isempty(hSc), hSc = hh; end
@@ -586,8 +639,9 @@ hLegEntries = gobjects(0);
 legNames    = strings(0);
 
 for k = 1:nLines
-    idx = (k-1)*N + (1:N);
+    idx = lineIdx{k};
     cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
+    jointMask = isJoint(idx);
 
     % 1. Drift segments (bottom layer) - per-point displacement vectors
     for j = idx
@@ -602,22 +656,34 @@ for k = 1:nLines
         'Color', [1 1 0], 'LineWidth', 2.5);
 
     % 3. Reference sample-point markers (white circles outlined in black)
-    plot(ax, xRef(idx), yRef(idx), 'o', ...
+    %    Joints (polyline vertices) drawn as larger yellow diamonds.
+    plot(ax, xRef(idx(~jointMask)), yRef(idx(~jointMask)), 'o', ...
         'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
         'LineWidth', 0.8, 'HandleVisibility','off');
+    plot(ax, xRef(idx(jointMask)), yRef(idx(jointMask)), 'd', ...
+        'MarkerEdgeColor', 'k', 'MarkerFaceColor', [1 1 0], 'MarkerSize', 11, ...
+        'LineWidth', 1.0, 'HandleVisibility','off');
 
     % 4. Deflected polyline (black halo + saturated color on top)
+    %    Joints drawn as larger yellow-edged diamonds in the portion color.
     plot(ax, xDef(idx), yDef(idx), '-', ...
         'Color', 'k', 'LineWidth', 5.5, 'HandleVisibility','off');
     hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.2);
-    plot(ax, xDef(idx), yDef(idx), 's', ...
+    plot(ax, xDef(idx(~jointMask)), yDef(idx(~jointMask)), 's', ...
         'MarkerEdgeColor', 'k', 'MarkerFaceColor', cl, 'MarkerSize', 9, ...
         'LineWidth', 0.8, 'HandleVisibility','off');
+    hJ = plot(ax, xDef(idx(jointMask)), yDef(idx(jointMask)), 'd', ...
+        'MarkerEdgeColor', [1 1 0], 'MarkerFaceColor', cl, 'MarkerSize', 13, ...
+        'LineWidth', 1.6);
 
     hLegEntries = [hLegEntries, hDr, hDe];
     legNames    = [legNames, ...
         string(lineLabels{k}) + " --- reference (drawn)", ...
         string(lineLabels{k}) + sprintf(" --- deflected (x%d)", visMag)];
+    if any(jointMask) && k == 1
+        hLegEntries = [hLegEntries, hJ];
+        legNames    = [legNames, "joint (polyline vertex)"];
+    end
 end
 
 ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (x%d visual)', peakGlobal, visMag), ...
