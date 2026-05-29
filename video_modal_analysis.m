@@ -28,6 +28,17 @@ welchOverlap = 0.5;
 % video where the structure rings (1-4 s in the example clip).
 analysisWindow = [1 4];
 
+% Peak frequency reporting:
+%   false  -> peak = argmax of dB-PSD AT the bin (no interpolation).
+%             The reported number is one of the actual FFT frequencies,
+%             with uncertainty bounded by df = fs / N. Honest with
+%             coarse-resolution spectra. RECOMMENDED for a validity
+%             argument vs accelerometer ground truth.
+%   true   -> 3-point parabolic refinement around the bin max gives a
+%             sub-bin estimate (valid for windowed sinusoids with high
+%             SNR, but is not a "measurement" - it is an estimator).
+useParabolicInterp = false;
+
 % Manual peak picking (click on PSD)
 manualPick = false;
 
@@ -380,14 +391,14 @@ peakAccPerKLT = nan(N, nPat);
 for kk = 1:nPat
     for jj = 1:N
         col = (kk-1)*N + jj;
-        peakAccPerKLT(jj, kk) = paraPeakHz(Pacc_pp(:, col), f, magBand);
+        peakAccPerKLT(jj, kk) = paraPeakHz(Pacc_pp(:, col), f, magBand, useParabolicInterp);
     end
 end
 
 % Per-point peaks on structural lines (Pxx columns 1..nStructPts)
 peakStructPerPt = nan(nStructPts, 1);
 for j = 1:nStructPts
-    peakStructPerPt(j) = paraPeakHz(Pxx(:, j), f, magBand);
+    peakStructPerPt(j) = paraPeakHz(Pxx(:, j), f, magBand, useParabolicInterp);
 end
 
 % Aggregate per-line peak statistics (mean ± std across point peaks)
@@ -406,13 +417,13 @@ for k = 1:nLines
     peakStats.StdPeakHz(k)        = std(fp, 0, 'omitnan');
     peakStats.MinPeakHz(k)        = min(fp);
     peakStats.MaxPeakHz(k)        = max(fp);
-    peakStats.AvgPSDPeakHz(k)     = paraPeakHz(Pline(:,k), f, magBand);
+    peakStats.AvgPSDPeakHz(k)     = paraPeakHz(Pline(:,k), f, magBand, useParabolicInterp);
     peakStats.AvgPSDPeakHz_FP(k)  = findpeaksPeakHz(Pline(:,k), f, magBand);
 end
 linePeaks = peakStats.AvgPSDPeakHz;
 
 % Global average PSD peak (the publication number)
-globalPeakHz    = paraPeakHz(Pglobal, f, magBand);
+globalPeakHz    = paraPeakHz(Pglobal, f, magBand, useParabolicInterp);
 globalPeakHz_FP = findpeaksPeakHz(Pglobal, f, magBand);
 globalPeakFreqs = globalPeakHz;
 
@@ -421,7 +432,13 @@ peakFreqPerPoint = [peakStructPerPt; peakAccPerKLT(:)];
 
 % Diagnostic: peak of the mean vs mean of per-point peaks
 fprintf('\n===== PEAK DETECTION DIAGNOSTIC =====\n');
-fprintf('  bin width df = %.4f Hz  (fs/nfft)\n', df_bin);
+if useParabolicInterp
+    fprintf('  Peak reporting   : parabolic sub-bin refinement\n');
+else
+    fprintf('  Peak reporting   : bin-snap (no interpolation)\n');
+end
+fprintf('  bin width df     : %.4f Hz  (fs / N_window)\n', df_bin);
+fprintf('  uncertainty floor: +/- %.4f Hz  (df/2)\n', df_bin/2);
 fprintf('  GLOBAL avg-PSD peak    : %.4f Hz  (findpeaks: %.4f Hz)\n', globalPeakHz, globalPeakHz_FP);
 fprintf('  GLOBAL mean of per-pt  : %.4f +/- %.4f Hz   (n=%d)\n', ...
     mean(peakFreqPerPoint,'omitnan'), std(peakFreqPerPoint,0,'omitnan'), numel(peakFreqPerPoint));
@@ -728,7 +745,7 @@ for k = 1:nLines
         'MarkerEdgeColor','k', 'LineWidth', 0.5);
 
     % Auto-detected peak from the averaged curve
-    peakAvgPSD = paraPeakHz(Pavg, f, magBand);
+    peakAvgPSD = paraPeakHz(Pavg, f, magBand, useParabolicInterp);
     hPkA = xline(ax, peakAvgPSD, 'r--', sprintf('avg-PSD peak = %.3f Hz', peakAvgPSD), ...
         'LineWidth', 1.6, 'LabelOrientation','horizontal', ...
         'LabelVerticalAlignment','top', 'Color',[0.85 0.1 0.1]);
@@ -818,11 +835,11 @@ if nOrigLines >= 2
     for k = 1:nOrigLines
         hPort(k) = semilogy(ax, f, max(Pline(:,k), eps), '-', ...
             'LineWidth', 1.6, 'Color', portionCols(k,:));
-        portPeakHz(k) = paraPeakHz(Pline(:,k), f, magBand);
+        portPeakHz(k) = paraPeakHz(Pline(:,k), f, magBand, useParabolicInterp);
     end
     Pport_avg = mean(Pline(:, 1:nOrigLines), 2, 'omitnan');
     hPortAvg = semilogy(ax, f, max(Pport_avg, eps), 'k-', 'LineWidth', 3.2);
-    portAvgPeakHz = paraPeakHz(Pport_avg, f, magBand);
+    portAvgPeakHz = paraPeakHz(Pport_avg, f, magBand, useParabolicInterp);
 
     % Mark each portion's peak as a small triangle on its own curve
     for k = 1:nOrigLines
@@ -1002,7 +1019,7 @@ saveHQ(figS, '07_peak_mean_std');
 
 % Append OVERALL row to the peak statistics CSV
 overallRow = table("OVERALL", overallN, overallMean, overallStd, ...
-    min(allPeaks), max(allPeaks), paraPeakHz(Pglobal, f, magBand), findpeaksPeakHz(Pglobal, f, magBand), ...
+    min(allPeaks), max(allPeaks), paraPeakHz(Pglobal, f, magBand, useParabolicInterp), findpeaksPeakHz(Pglobal, f, magBand), ...
     'VariableNames', peakStats.Properties.VariableNames);
 peakStatsAll = [peakStats; overallRow];
 writetable(peakStatsAll, fullfile(outputDir, 'peak_statistics_mean_std.csv'));
@@ -1142,29 +1159,35 @@ end
 fprintf('\nResults saved to: %s\n', outputDir);
 
 %% ===================== LOCAL FUNCTIONS ===========================
-function fpk = paraPeakHz(P, f, band)
-    % Peak frequency = argmax of dB-PSD within [band(1),band(2)] refined
-    % to sub-bin resolution with a 3-point parabolic fit.
+function fpk = paraPeakHz(P, f, band, useInterp)
+    % Peak frequency within [band(1),band(2)].
+    %   useInterp = false (default): peak = bin center where dB-PSD is
+    %               maximum. The reported frequency is one of the actual
+    %               FFT bins; uncertainty floor = df = fs/N.
+    %   useInterp = true: 3-point parabolic refinement around the bin
+    %               max for a sub-bin estimate (Hann main-lobe is
+    %               approximately parabolic in dB).
+    if nargin < 4 || isempty(useInterp), useInterp = false; end
     bandIdx = f >= band(1) & f <= band(2);
     fb = f(bandIdx);
     Pb = P(bandIdx);
     if isempty(Pb), fpk = NaN; return; end
     PbdB = 10*log10(max(Pb, eps));
     [~, im] = max(PbdB);
-    if im > 1 && im < numel(PbdB)
-        y0 = PbdB(im-1); y1 = PbdB(im); y2 = PbdB(im+1);
-        denom = (y0 - 2*y1 + y2);
-        if abs(denom) > 1e-12
-            delta = 0.5 * (y0 - y2) / denom;       % bin offset in [-0.5, 0.5]
-            delta = max(min(delta, 0.5), -0.5);
-        else
-            delta = 0;
-        end
-        dfb = fb(2) - fb(1);
-        fpk = fb(im) + delta * dfb;
-    else
+    if ~useInterp || im <= 1 || im >= numel(PbdB)
         fpk = fb(im);
+        return;
     end
+    y0 = PbdB(im-1); y1 = PbdB(im); y2 = PbdB(im+1);
+    denom = (y0 - 2*y1 + y2);
+    if abs(denom) > 1e-12
+        delta = 0.5 * (y0 - y2) / denom;
+        delta = max(min(delta, 0.5), -0.5);
+    else
+        delta = 0;
+    end
+    dfb = fb(2) - fb(1);
+    fpk = fb(im) + delta * dfb;
 end
 
 function fpk = findpeaksPeakHz(P, f, band)
