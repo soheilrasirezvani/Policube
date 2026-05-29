@@ -4,7 +4,6 @@ clear; clc; close all;
 videoFile = "D:\dronebasedVMM\Deep-Motion-Mag-Pytorch-main\Rightview-lab-final\9.5-10.5Hz\output_frames_P02m_30_fl9.5_fh10.5_fs60.0_n4_butter.mp4";
 
 lineLabels         = {'1st landing','2nd landing'};
-
 accelPatternLabels = {'acc0','acc1','acc2','acc3'};
 nPointsPerLine     = 5;
 
@@ -29,12 +28,11 @@ firstGray  = im2gray(firstFrame);
 fprintf('Video: %dx%d @ %.2f fps, %.2f s\n', v.Width, v.Height, fs, v.Duration);
 
 %% ----- DRAW STRUCTURAL LINES (mouse) ------------------------------------
-nLines  = numel(lineLabels);
-nPat    = numel(accelPatternLabels);
-N       = nPointsPerLine;
-clrAll  = lines(nLines + nPat);
+nLines = numel(lineLabels);
+nPat   = numel(accelPatternLabels);
+N      = nPointsPerLine;
 
-figure('Name','Setup', 'color', 'w','NumberTitle','off');
+figure('Name','Setup', 'Color', 'w','NumberTitle','off');
 imshow(firstFrame); hold on;
 
 lineCoords = zeros(nLines, 4);   % [x1 y1 x2 y2]
@@ -45,69 +43,66 @@ for k = 1:nLines
     lineCoords(k,:) = [h.Position(1,:) h.Position(2,:)];
 end
 
-% Distribute N points along each line + grab an NCC template per point
+% Distribute N points along each line, grab a small NCC template per point
 nStructPts = nLines * N;
 pts0       = zeros(nStructPts, 2);
-templates  = cell(nStructPts, 1);
-halfPatch  = 20;        % template half-size (px) -> 41x41 patch
+lineTmpl   = cell(nStructPts, 1);
+halfPatch  = 20;     % half-size of the line-point template (px) -> 41x41
 for k = 1:nLines
-    s    = linspace(0, 1, N).';
-    xs   = lineCoords(k,1) + s * (lineCoords(k,3) - lineCoords(k,1));
-    ys   = lineCoords(k,2) + s * (lineCoords(k,4) - lineCoords(k,2));
-    idx  = (k-1)*N + (1:N);
+    s  = linspace(0, 1, N).';
+    xs = lineCoords(k,1) + s * (lineCoords(k,3) - lineCoords(k,1));
+    ys = lineCoords(k,2) + s * (lineCoords(k,4) - lineCoords(k,2));
+    idx = (k-1)*N + (1:N);
     pts0(idx,:) = [xs ys];
     plot(xs, ys, 'o', 'Color', 'w', 'MarkerFaceColor', 'w');
     for j = idx
         cx = round(pts0(j,1));  cy = round(pts0(j,2));
         r1 = max(1, cy-halfPatch);  r2 = min(size(firstGray,1), cy+halfPatch);
         c1 = max(1, cx-halfPatch);  c2 = min(size(firstGray,2), cx+halfPatch);
-        templates{j} = firstGray(r1:r2, c1:c2);
+        lineTmpl{j} = firstGray(r1:r2, c1:c2);
     end
 end
 
-%% ----- DRAW ACCELEROMETER ROIs (mouse) ----------------------------------
-patternRects = zeros(nPat, 4);
-accelPts0    = zeros(0, 2);
-nFeatsFound  = zeros(nPat, 1);    % how many real corners each ROI gave us
+%% ----- DRAW ACCELEROMETER RECTANGLES (one NCC template per ROI) ---------
+% You draw a rectangle directly on each accelerometer / its housing.
+% The rectangle's pixels ARE the template; it is tracked frame-to-frame
+% with normalized cross-correlation. One signal per accelerometer.
+accRect   = zeros(nPat, 4);   % [x y w h]
+accTmpl   = cell(nPat, 1);
+accPos0   = zeros(nPat, 2);   % template center at frame 1
+accTH     = zeros(nPat, 1);   % template height
+accTW     = zeros(nPat, 1);   % template width
 for k = 1:nPat
-    title(sprintf('Draw rectangle %d/%d: %s', k, nPat, accelPatternLabels{k}));
+    title(sprintf('Draw rectangle %d/%d on %s', k, nPat, accelPatternLabels{k}));
     hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
     wait(hR);
-    patternRects(k,:) = hR.Position;
-    roi = round(patternRects(k,:));
-    feats = detectMinEigenFeatures(firstGray, 'ROI', roi, 'MinQuality', 0.005);
-    nFeatsFound(k) = size(feats.Location, 1);
-    if nFeatsFound(k) >= N
-        [~, ord] = sort(feats.Metric, 'descend');
-        sel = feats.Location(ord(1:N), :);
-    else
-        cx = roi(1) + roi(3)/2;  cy = roi(2) + roi(4)/2;
-        sel = [feats.Location; repmat([cx cy], N-nFeatsFound(k), 1)];
-        warning('ROI %s: only %d real corners found (need %d), padded with ROI center.', ...
-            accelPatternLabels{k}, nFeatsFound(k), N);
-    end
-    accelPts0 = [accelPts0; sel];
-    rectangle('Position', roi, 'EdgeColor', 'r', 'LineWidth', 1.5);
-    plot(sel(:,1), sel(:,2), 's', 'Color', 'r', ...
-         'MarkerFaceColor', 'r');
+    accRect(k,:) = hR.Position;
+    roi = round(accRect(k,:));
+    % clamp to image bounds
+    x1 = max(1, roi(1));               y1 = max(1, roi(2));
+    x2 = min(size(firstGray,2), x1 + max(roi(3)-1, 0));
+    y2 = min(size(firstGray,1), y1 + max(roi(4)-1, 0));
+    accTmpl{k} = firstGray(y1:y2, x1:x2);
+    [accTH(k), accTW(k)] = size(accTmpl{k});
+    accPos0(k,:) = [(x1+x2)/2, (y1+y2)/2];
+    rectangle('Position', [x1 y1 x2-x1+1 y2-y1+1], 'EdgeColor', 'r', 'LineWidth', 1.5);
+    plot(accPos0(k,1), accPos0(k,2), 's', 'Color', 'r', ...
+         'MarkerFaceColor', 'r', 'MarkerSize', 10);
 end
-title('Tracking points placed'); drawnow;
+title('Tracking templates placed'); drawnow;
 exportgraphics(gcf, fullfile(outputDir,'01_tracked_points.png'), 'Resolution', 300);
 
-%% ----- TRACK: NCC for line points, KLT for accelerometer points ---------
-% NCC = normalized cross-correlation template matching. Good for points
-%       placed at arbitrary locations along a line (no need for a corner).
-% KLT = Kanade-Lucas-Tomasi. Good for corner-like features in a ROI.
-tracker = vision.PointTracker('MaxBidirectionalError', 1, ...
-    'NumPyramidLevels', 3, 'BlockSize', [31 31]);
-initialize(tracker, accelPts0, firstFrame);
-
+%% ----- TRACK (NCC for every point and every accel rectangle) -----------
 nFest    = floor(v.Duration * fs) + 5;
-nTotal   = nStructPts + nPat * N;
+nTotal   = nStructPts + nPat;
 trkY     = nan(nFest, nTotal);
-trkY(1,:) = [pts0(:,2); accelPts0(:,2)].';
-curPos    = pts0;
-searchPad = 10;
+trkY(1, 1:nStructPts) = pts0(:,2).';
+trkY(1, nStructPts+1:end) = accPos0(:,2).';
+
+curLinePos = pts0;
+curAccPos  = accPos0;
+searchPad     = 10;     % extra pixels around the line-point template
+accSearchPad  = 30;     % extra pixels around the accelerometer template
 
 i = 1; hWait = waitbar(0, 'Tracking video...');
 while hasFrame(v)
@@ -115,11 +110,11 @@ while hasFrame(v)
     fr     = readFrame(v);
     frGray = im2gray(fr);
 
-    % --- NCC for structural line points ---
+    % --- line points (small templates) ---
     for j = 1:nStructPts
-        tmpl = templates{j};
+        tmpl = lineTmpl{j};
         [tH, tW] = size(tmpl);
-        cx = round(curPos(j,1));  cy = round(curPos(j,2));
+        cx = round(curLinePos(j,1));  cy = round(curLinePos(j,2));
         sH = halfPatch + searchPad;
         sr1 = max(1, cy-sH);  sr2 = min(size(frGray,1), cy+sH);
         sc1 = max(1, cx-sH);  sc2 = min(size(frGray,2), cx+sH);
@@ -132,14 +127,31 @@ while hasFrame(v)
         [pr, pc] = ind2sub(size(C), mi);
         newY = sr1 + pr - tH + floor(tH/2);
         newX = sc1 + pc - tW + floor(tW/2);
-        curPos(j,:) = [newX, newY];
-        trkY(i, j)  = newY;
+        curLinePos(j,:) = [newX, newY];
+        trkY(i, j) = newY;
     end
 
-    % --- KLT for accelerometer-ROI points ---
-    [pos, valid] = tracker(fr);
-    pos(~valid, :) = NaN;
-    trkY(i, nStructPts+1:end) = pos(:,2).';
+    % --- accelerometer rectangles (one large template each) ---
+    for k = 1:nPat
+        tmpl = accTmpl{k};
+        tH = accTH(k);  tW = accTW(k);
+        cx = round(curAccPos(k,1));  cy = round(curAccPos(k,2));
+        sr1 = max(1, round(cy - tH/2 - accSearchPad));
+        sr2 = min(size(frGray,1), round(cy + tH/2 + accSearchPad));
+        sc1 = max(1, round(cx - tW/2 - accSearchPad));
+        sc2 = min(size(frGray,2), round(cx + tW/2 + accSearchPad));
+        region = frGray(sr1:sr2, sc1:sc2);
+        if size(region,1) < tH || size(region,2) < tW
+            trkY(i, nStructPts+k) = NaN;  continue;
+        end
+        C = normxcorr2(tmpl, region);
+        [~, mi] = max(C(:));
+        [pr, pc] = ind2sub(size(C), mi);
+        newY = sr1 + pr - tH + floor(tH/2);
+        newX = sc1 + pc - tW + floor(tW/2);
+        curAccPos(k,:) = [newX, newY];
+        trkY(i, nStructPts+k) = newY;
+    end
 
     if mod(i,30) == 0, waitbar(min(i/nFest,1), hWait); end
 end
@@ -154,26 +166,21 @@ Y = trkY - trkY(1, :);
 Y = fillmissing(Y, 'linear', 1, 'EndValues', 'nearest');
 Y = detrend(Y, 1);
 
-Y_struct = Y(:, 1:nStructPts);                % nF x (nLines*N)
-Y_accAll = Y(:, nStructPts+1:end);            % nF x (nPat*N), per KLT point
-Y_acc    = zeros(nF, nPat);                   % nF x nPat, one signal per ROI
-for k = 1:nPat
-    Y_acc(:, k) = mean(Y_accAll(:, (k-1)*N + (1:N)), 2, 'omitnan');
-end
+Y_struct = Y(:, 1:nStructPts);            % line points
+Y_acc    = Y(:, nStructPts+1:end);        % one signal per accelerometer ROI
 
 %% ----- PSD: periodogram on active window, no zero padding ---------------
-tMask  = t >= analysisWindow(1) & t <= analysisWindow(2);
-nWin   = sum(tMask);
-win    = hann(nWin, 'periodic');
-df     = fs / nWin;
+tMask = t >= analysisWindow(1) & t <= analysisWindow(2);
+nWin  = sum(tMask);
+win   = hann(nWin, 'periodic');
+df    = fs / nWin;
 fprintf('Analysis window: %.2f-%.2f s (%d samples, df = %.4f Hz)\n', ...
     analysisWindow, nWin, df);
 
-[Pxx,    f] = periodogram(Y_struct(tMask, :), win, nWin, fs);
-[Pacc,   ~] = periodogram(Y_acc(tMask, :),    win, nWin, fs);
-[Pacc_pp,~] = periodogram(Y_accAll(tMask, :), win, nWin, fs);
+[Pxx,  f] = periodogram(Y_struct(tMask, :), win, nWin, fs);
+[Pacc, ~] = periodogram(Y_acc(tMask, :),    win, nWin, fs);
 
-% Per-line average PSD (structural lines: avg of N points; accel: 1 signal)
+% Per-line average PSD (lines = mean of N points; accel = the single signal)
 Pline = zeros(numel(f), nLines + nPat);
 for k = 1:nLines
     Pline(:, k) = mean(Pxx(:, (k-1)*N + (1:N)), 2);
@@ -181,7 +188,7 @@ end
 for k = 1:nPat
     Pline(:, nLines+k) = Pacc(:, k);
 end
-% Global average across structural lines only
+% Cross-portion average over structural lines
 Pglobal = mean(Pline(:, 1:nLines), 2);
 
 %% ----- BIN-SNAP PEAK DETECTION inside magBand ---------------------------
@@ -189,15 +196,15 @@ bandIdx = f >= magBand(1) & f <= magBand(2);
 fb      = f(bandIdx);
 peakHz  = @(P) bandArgMax(P, bandIdx, fb);
 
-% Per-point peaks: line points + per-KLT-point in each accel ROI
-peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),     1:nStructPts).';
-peakAccPP    = arrayfun(@(j) peakHz(Pacc_pp(:,j)), 1:(nPat*N)).';
+% Per-point peaks: line points + one peak per accelerometer ROI
+peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),  1:nStructPts).';
+peakAccPP    = arrayfun(@(j) peakHz(Pacc(:,j)), 1:nPat).';
 peakAllPts   = [peakStructPP; peakAccPP];
 
-% Per-line peak of the averaged PSD
+% Per-line averaged-PSD peak (line-by-line OR one per accel)
 peakPerLine  = arrayfun(@(k) peakHz(Pline(:,k)), 1:(nLines+nPat)).';
 
-% Global peak (peak of the cross-portion averaged PSD)
+% Global peak (peak of the cross-portion average over structural lines)
 peakGlobal   = peakHz(Pglobal);
 
 % Overall pooled statistics
@@ -212,24 +219,28 @@ fprintf('  Global peak (avg PSD)   : %.4f Hz  (vs accel %.2f Hz: %.2f%% error)\n
 fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d)\n', ...
     muPeak, sdPeak, numel(peakAllPts));
 
-%% ----- ROI QUALITY DIAGNOSTIC --------------------------------------------
-% A "trustworthy" ROI has a strong peak in magBand relative to its noise
-% floor. SNR = peak_PSD / median_PSD (linear ratio).  A peak that is only
-% marginally above the median is just the loudest bin of noise.
-fprintf('\n===== ROI SIGNAL QUALITY (peak / median PSD) =====\n');
-snrFloor = 100;   % below this we flag the ROI as untrustworthy
+%% ----- ROI SIGNAL QUALITY (out-of-band SNR) -----------------------------
+% A good modal response sticks well above the OUT-OF-BAND noise floor.
+% In-band median is not a useful baseline here because the magnification
+% flattens the response across magBand, so peak/in-band-median is ~5 even
+% for clean ROIs. Compare instead to median of bins OUTSIDE magBand
+% but inside the plot range.
+outBandIdx = ((f >= spectraXLim(1)) & (f <  magBand(1))) | ...
+             ((f >  magBand(2))     & (f <= spectraXLim(2)));
+fprintf('\n===== ROI SIGNAL QUALITY (peak vs out-of-band noise floor) =====\n');
+snrFloorDb = 20;     % below this we flag the ROI as untrustworthy (~100x linear)
 for k = 1:nPat
-    Pk    = Pacc(:, k);
-    snrK  = max(Pk(bandIdx)) / median(Pk(bandIdx));
-    flag  = '';
-    if nFeatsFound(k) < N
-        flag = sprintf(' [only %d/%d corners]', nFeatsFound(k), N);
+    Pk     = Pacc(:, k);
+    pkVal  = max(Pk(bandIdx));
+    nzVal  = median(Pk(outBandIdx));
+    snrLin = pkVal / max(nzVal, eps);
+    snrDb  = 10 * log10(snrLin);
+    flag   = '';
+    if snrDb < snrFloorDb
+        flag = '  <-- LOW SNR, peak likely an artefact';
     end
-    if snrK < snrFloor
-        flag = [flag, '  <-- LOW SNR, peak likely an artefact'];
-    end
-    fprintf('  %-6s  peak/median = %8.1f   peak = %.3f Hz%s\n', ...
-        accelPatternLabels{k}, snrK, peakPerLine(nLines+k), flag);
+    fprintf('  %-6s  peak/noise = %8.1f (%5.1f dB)   peak = %.3f Hz%s\n', ...
+        accelPatternLabels{k}, snrLin, snrDb, peakPerLine(nLines+k), flag);
 end
 
 %% ----- CROSS-SPECTRUM (magnitude + phase) between accel ROIs ------------
@@ -256,7 +267,6 @@ CPSDphase   = rad2deg(angle(CPSD));
 CPSDmag_avg = mean(CPSDmag, 2);
 
 %% ----- TIME-DOMAIN CROSS-CORRELATION between accel ROIs -----------------
-% No extra filtering: the magnification step already band-limits the signal
 maxLag = round(min(1.5, 0.5*(analysisWindow(2)-analysisWindow(1))) * fs);
 lagSec = (-maxLag:maxLag).' / fs;
 xcMat     = zeros(2*maxLag+1, nPairs);
@@ -282,31 +292,32 @@ end
 %% ----- SAVE TABLES (CSV) ------------------------------------------------
 groupLabels = [string(lineLabels), string(accelPatternLabels)];
 
-% Time histories (structural + per-ROI averaged accelerometer)
+% Time histories (structural + per-ROI accelerometer)
 colNames = strings(1, nStructPts + nPat);
-for k = 1:nLines, for j = 1:N
+for k = 1:nLines
+    for j = 1:N
         colNames((k-1)*N + j) = sprintf('%s_P%d', matlab.lang.makeValidName(lineLabels{k}), j);
-    end, end
+    end
+end
 for k = 1:nPat
     colNames(nStructPts + k) = string(matlab.lang.makeValidName(accelPatternLabels{k}));
 end
 THtbl = array2table([t, Y_struct, Y_acc], 'VariableNames', ['time_s' cellstr(colNames)]);
 writetable(THtbl, fullfile(outputDir,'time_histories_Y_px.csv'));
 
-% Per-point peaks (all 50/80 of them) with their group label
+% Per-point peaks
 ppGroup = strings(numel(peakAllPts), 1);
 for k = 1:nLines
     ppGroup((k-1)*N + (1:N)) = string(lineLabels{k});
 end
 for k = 1:nPat
-    ppGroup(nStructPts + (k-1)*N + (1:N)) = string(accelPatternLabels{k});
+    ppGroup(nStructPts + k) = string(accelPatternLabels{k});
 end
 writetable(table(ppGroup, peakAllPts, 'VariableNames', {'Group','PeakHz'}), ...
     fullfile(outputDir,'per_point_peaks.csv'));
 
-% Summary: per-line peaks + overall pooled
-peakSummary = table(groupLabels(:), peakPerLine, ...
-    'VariableNames', {'Group','AvgPSDPeakHz'});
+% Summary: per-line + overall pooled
+peakSummary = table(groupLabels(:), peakPerLine, 'VariableNames', {'Group','AvgPSDPeakHz'});
 overallRow = table("OVERALL_POOLED", muPeak, 'VariableNames', {'Group','AvgPSDPeakHz'});
 peakSummary = [peakSummary; overallRow];
 peakSummary.Mean_pm_Std = strings(height(peakSummary), 1);
@@ -345,7 +356,9 @@ end
 xlabel('Time [s]');
 saveHQ(fig, '02_time_histories');
 
-%% ----- Plot: per-line PSDs (individual dotted + bold average) ----------
+%% ----- Plot: PSDs per group --------------------------------------------
+% Lines: N individual point PSDs (dotted) + bold black average
+% Accelerometers: one PSD (bold black) - single template per ROI
 for k = 1:(nLines + nPat)
     fig = figure('Name', sprintf('PSD %s', groupLabels{k}), 'Color', 'w', ...
         'Position', [80 80 1100 600]);
@@ -353,16 +366,16 @@ for k = 1:(nLines + nPat)
 
     if k <= nLines
         Pcols = Pxx(:, (k-1)*N + (1:N));
+        hInd  = semilogy(ax, f, max(Pcols, eps), ':', 'LineWidth', 1.0, 'Color',[0.55 0.55 0.55]);
+        Pavg  = mean(Pcols, 2);
+        nCurves = size(Pcols, 2);
+        indLabel = sprintf('Individual PSDs (n=%d)', nCurves);
     else
-        Pcols = Pacc_pp(:, (k-nLines-1)*N + (1:N));
+        Pavg = Pacc(:, k-nLines);
+        hInd = [];                     % no individual curves for accel
+        indLabel = '';
     end
-    nCurves = size(Pcols, 2);
 
-    % Individual point PSDs
-    hInd = semilogy(ax, f, max(Pcols, eps), ':', 'LineWidth', 1.0, 'Color',[0.55 0.55 0.55]);
-
-    % Bold black average
-    Pavg = mean(Pcols, 2);
     hAvg = semilogy(ax, f, max(Pavg, eps), 'k-', 'LineWidth', 3.0);
 
     % Bin-snap peak from the average
@@ -379,9 +392,15 @@ for k = 1:(nLines + nPat)
     xlabel(ax,'Frequency [Hz]'); ylabel(ax,'PSD [px^{2}/Hz]');
     title(ax, sprintf('%s   |   peak of avg PSD = %.3f Hz   (df = %.3f Hz)', ...
         groupLabels{k}, pkHz, df), 'FontWeight','normal');
-    legend(ax, [hInd(1), hAvg, hPk, hRef], ...
-        {sprintf('Individual PSDs (n=%d)', nCurves), 'Average PSD (bold)', ...
-         'Detected peak (video)','Accelerometer reference'}, 'Location','northeast');
+    if isempty(hInd)
+        legend(ax, [hAvg, hPk, hRef], ...
+            {'PSD (bold)', 'Detected peak (video)','Accelerometer reference'}, ...
+            'Location','northeast');
+    else
+        legend(ax, [hInd(1), hAvg, hPk, hRef], ...
+            {indLabel, 'Average PSD (bold)', 'Detected peak (video)','Accelerometer reference'}, ...
+            'Location','northeast');
+    end
     saveHQ(fig, sprintf('03_PSD_%s', matlab.lang.makeValidName(groupLabels{k})));
 end
 
@@ -390,7 +409,7 @@ fig = figure('Name','Overall pooled peak','Color','w','Position',[80 80 1100 600
 ax  = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 
 % Dots aligned vertically per group (no jitter)
-xc = 1:(nLines+nPat);
+xc  = 1:(nLines+nPat);
 hSc = [];
 for k = 1:nLines
     fp = peakStructPP((k-1)*N + (1:N));
@@ -400,8 +419,7 @@ for k = 1:nLines
     if isempty(hSc), hSc = hh; end
 end
 for k = 1:nPat
-    fp = peakAccPP((k-1)*N + (1:N));
-    scatter(ax, (nLines+k)*ones(N,1), fp, 50, [0.30 0.45 0.75], 'filled', ...
+    scatter(ax, (nLines+k), peakAccPP(k), 50, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
 end
