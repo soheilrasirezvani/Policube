@@ -575,9 +575,13 @@ fig = figure('Name','Mode shape overlay','Color','k','Position',[60 60 1500 900]
 ax  = axes(fig);
 imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
 
-% High-contrast colors for portions (good on dark/gray backgrounds)
-portionColors = {[0.10 0.85 1.00], [0.20 1.00 0.30], ...
-                 [1.00 0.55 0.10], [1.00 0.20 0.85]};
+% High-contrast saturated colors per portion. Each element of the plot
+% is drawn with a black halo first so it stays readable on light AND
+% dark backgrounds (steel / glass / shadow all show up in your clips).
+portionColors = {[1.00 0.20 0.85], ... % magenta
+                 [0.10 0.85 1.00], ... % cyan
+                 [0.30 1.00 0.15], ... % lime
+                 [1.00 0.55 0.10]};    % orange
 hLegEntries = gobjects(0);
 legNames    = strings(0);
 
@@ -585,33 +589,35 @@ for k = 1:nLines
     idx = (k-1)*N + (1:N);
     cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
 
-    % 1. Drawn line (yellow dashed)
-    hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), ...
-        '--', 'Color', [1 1 0], 'LineWidth', 2.2);
-
-    % 2. Reference (initial tracked-point polyline)
-    hRf = plot(ax, xRef(idx), yRef(idx), '-', 'Color', cl, 'LineWidth', 1.3);
-
-    % drift segments per point (no legend entry)
+    % 1. Drift segments (bottom layer) - per-point displacement vectors
     for j = idx
         plot(ax, [xRef(j) xDef(j)], [yRef(j) yDef(j)], '-', ...
-            'Color', [cl 0.5], 'LineWidth', 0.9, 'HandleVisibility','off');
+            'Color', [cl 0.55], 'LineWidth', 1.0, 'HandleVisibility','off');
     end
 
-    % 3. Deflected shape
-    hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.0);
-    plot(ax, xDef(idx), yDef(idx), 's', 'Color', cl, ...
-        'MarkerFaceColor', cl, 'MarkerSize', 8, 'HandleVisibility','off');
+    % 2. Drawn polyline = reference shape (black halo + yellow dashed)
+    plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '-', ...
+        'Color', 'k', 'LineWidth', 4.5, 'HandleVisibility','off');
+    hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '--', ...
+        'Color', [1 1 0], 'LineWidth', 2.5);
 
-    % reference markers
-    plot(ax, xRef(idx), yRef(idx), 'o', 'Color', cl, ...
-        'MarkerFaceColor', 'none', 'MarkerSize', 6, 'HandleVisibility','off');
+    % 3. Reference sample-point markers (white circles outlined in black)
+    plot(ax, xRef(idx), yRef(idx), 'o', ...
+        'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
+        'LineWidth', 0.8, 'HandleVisibility','off');
 
-    hLegEntries = [hLegEntries, hDr, hRf, hDe];
+    % 4. Deflected polyline (black halo + saturated color on top)
+    plot(ax, xDef(idx), yDef(idx), '-', ...
+        'Color', 'k', 'LineWidth', 5.5, 'HandleVisibility','off');
+    hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.2);
+    plot(ax, xDef(idx), yDef(idx), 's', ...
+        'MarkerEdgeColor', 'k', 'MarkerFaceColor', cl, 'MarkerSize', 9, ...
+        'LineWidth', 0.8, 'HandleVisibility','off');
+
+    hLegEntries = [hLegEntries, hDr, hDe];
     legNames    = [legNames, ...
-        string(lineLabels{k}) + " --- drawn", ...
-        string(lineLabels{k}) + " --- ref", ...
-        string(lineLabels{k}) + sprintf(" --- def (x%d)", visMag)];
+        string(lineLabels{k}) + " --- reference (drawn)", ...
+        string(lineLabels{k}) + sprintf(" --- deflected (x%d)", visMag)];
 end
 
 ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (x%d visual)', peakGlobal, visMag), ...
