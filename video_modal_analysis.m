@@ -305,8 +305,17 @@ Xspec = fft(Xwin, nWin);
 Yspec = fft(Ywin, nWin);
 fMode = (0:floor(nWin/2)).' * fs / nWin;
 [~, ipk] = min(abs(fMode - peakGlobal));
-Ux = Xspec(ipk, :).';
-Uy = Yspec(ipk, :).';
+
+% Normalize the FFT coefficient to a physical amplitude in pixels.
+% For a sinusoid of amplitude A and a window w, the bin magnitude is
+%     |X[k]| = A * sum(w) / 2
+% so multiplying by 2/sum(w) recovers the amplitude. After this scaling,
+% |U_j| is the per-cycle displacement of point j in pixels, and the
+% snapshot dx, dy below is also in pixels -> visMag = 1 means real motion.
+windowGain = sum(win) / 2;
+Ux = Xspec(ipk, :).' / windowGain;
+Uy = Yspec(ipk, :).' / windowGain;
+
 phiStar = 0.5 * angle( sum(Ux.^2 + Uy.^2) );
 dx = real(Ux * exp(-1i * phiStar));
 dy = real(Uy * exp(-1i * phiStar));
