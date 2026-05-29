@@ -40,25 +40,48 @@ N      = nPointsPerLine;
 figure('Name','Setup', 'Color', 'w','NumberTitle','off');
 imshow(firstFrame); hold on;
 
-lineCoords = zeros(nLines, 4);   % [x1 y1 x2 y2]
+lineVerts = cell(nLines, 1);   % each cell: Mk x 2 array of polyline vertices
+snapTolPx = 25;                % snap a new vertex onto an existing one within this radius
 for k = 1:nLines
-    title(sprintf('Draw line %d/%d: %s', k, nLines, lineLabels{k}));
-    h = drawline('Color', 'w', 'LineWidth', 2);
+    title(sprintf('Draw polyline %d/%d (%s): click vertices, double-click to finish', ...
+        k, nLines, lineLabels{k}));
+    h = drawpolyline('Color', 'w', 'LineWidth', 2);
     wait(h);
-    lineCoords(k,:) = [h.Position(1,:) h.Position(2,:)];
+    verts = h.Position;             % M x 2 array [x y]
+    % Snap each endpoint of this polyline to any previously-drawn vertex
+    % within snapTolPx pixels, so adjacent portions can share corners.
+    for prev = 1:k-1
+        for ii = [1, size(verts,1)]
+            d = hypot(lineVerts{prev}(:,1) - verts(ii,1), ...
+                      lineVerts{prev}(:,2) - verts(ii,2));
+            [dmin, jj] = min(d);
+            if dmin <= snapTolPx
+                verts(ii,:) = lineVerts{prev}(jj,:);
+            end
+        end
+    end
+    lineVerts{k} = verts;
 end
 
-% Distribute N points along each line, grab a small NCC template per point
+% Distribute N points along each polyline's ARC LENGTH and grab an NCC
+% template per point. A multi-segment polyline lets one portion follow a
+% staircase corner; adjacent portions share endpoints when the user
+% (or the snap above) places them on the same pixel.
 nStructPts = nLines * N;
 pts0       = zeros(nStructPts, 2);
 lineTmpl   = cell(nStructPts, 1);
 halfPatch  = 20;     % half-size of the line-point template (px) -> 41x41
 for k = 1:nLines
-    s  = linspace(0, 1, N).';
-    xs = lineCoords(k,1) + s * (lineCoords(k,3) - lineCoords(k,1));
-    ys = lineCoords(k,2) + s * (lineCoords(k,4) - lineCoords(k,2));
+    verts = lineVerts{k};
+    segLen = hypot(diff(verts(:,1)), diff(verts(:,2)));
+    cumL   = [0; cumsum(segLen)];
+    totalL = cumL(end);
+    sTarget = linspace(0, totalL, N).';
+    xs = interp1(cumL, verts(:,1), sTarget);
+    ys = interp1(cumL, verts(:,2), sTarget);
     idx = (k-1)*N + (1:N);
     pts0(idx,:) = [xs ys];
+    plot(verts(:,1), verts(:,2), '-', 'Color', 'w', 'LineWidth', 1.5);
     plot(xs, ys, 'o', 'Color', 'w', 'MarkerFaceColor', 'w');
     for j = idx
         cx = round(pts0(j,1));  cy = round(pts0(j,2));
@@ -563,8 +586,7 @@ for k = 1:nLines
     cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
 
     % 1. Drawn line (yellow dashed)
-    hDr = plot(ax, [lineCoords(k,1) lineCoords(k,3)], ...
-                   [lineCoords(k,2) lineCoords(k,4)], ...
+    hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), ...
         '--', 'Color', [1 1 0], 'LineWidth', 2.2);
 
     % 2. Reference (initial tracked-point polyline)
