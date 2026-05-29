@@ -8,10 +8,15 @@ accelPatternLabels = {'acc0','acc1','acc2','acc3'};
 nPointsPerLine     = 5;
 
 % Modal analysis settings
-analysisWindow = [0 5];      % seconds, the segment where the structure rings
-magBand        = [9 11];     % Hz, peak search band (matches the magnification)
-accelTargetHz  = 10.2;       % Hz, accelerometer ground-truth frequency
-spectraXLim    = [8 19];     % Hz, x-axis for spectra plots
+analysisWindow = [0 5];       % seconds, the segment where the structure rings
+magBand        = [9 11];      % Hz, peak search band (matches the magnification)
+accelTargetHz  = 10.2;        % Hz, accelerometer ground-truth frequency
+spectraXLim    = [8 19];      % Hz, x-axis for spectra plots
+
+% Mode-shape overlay visual magnification.
+%   'auto'  -> scaled so the maximum deflection is ~5% of the image height
+%   number  -> e.g. 400 (matches the example you sent)
+modeShapeVisualMag = 'auto';
 
 % Output folder on the Desktop (timestamped so runs don't overwrite)
 desktopDir = fullfile(getenv('USERPROFILE'), 'Desktop');
@@ -64,21 +69,17 @@ for k = 1:nLines
 end
 
 %% ----- DRAW ACCELEROMETER RECTANGLES (one NCC template per ROI) ---------
-% You draw a rectangle directly on each accelerometer / its housing.
-% The rectangle's pixels ARE the template; it is tracked frame-to-frame
-% with normalized cross-correlation. One signal per accelerometer.
-accRect   = zeros(nPat, 4);   % [x y w h]
-accTmpl   = cell(nPat, 1);
-accPos0   = zeros(nPat, 2);   % template center at frame 1
-accTH     = zeros(nPat, 1);   % template height
-accTW     = zeros(nPat, 1);   % template width
+accRect = zeros(nPat, 4);
+accTmpl = cell(nPat, 1);
+accPos0 = zeros(nPat, 2);
+accTH   = zeros(nPat, 1);
+accTW   = zeros(nPat, 1);
 for k = 1:nPat
     title(sprintf('Draw rectangle %d/%d on %s', k, nPat, accelPatternLabels{k}));
     hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
     wait(hR);
     accRect(k,:) = hR.Position;
     roi = round(accRect(k,:));
-    % clamp to image bounds
     x1 = max(1, roi(1));               y1 = max(1, roi(2));
     x2 = min(size(firstGray,2), x1 + max(roi(3)-1, 0));
     y2 = min(size(firstGray,1), y1 + max(roi(4)-1, 0));
@@ -93,16 +94,20 @@ title('Tracking templates placed'); drawnow;
 exportgraphics(gcf, fullfile(outputDir,'01_tracked_points.png'), 'Resolution', 300);
 
 %% ----- TRACK (NCC for every point and every accel rectangle) -----------
-nFest    = floor(v.Duration * fs) + 5;
-nTotal   = nStructPts + nPat;
-trkY     = nan(nFest, nTotal);
-trkY(1, 1:nStructPts) = pts0(:,2).';
-trkY(1, nStructPts+1:end) = accPos0(:,2).';
+% Both X and Y are stored so a 2-D operational mode shape can be drawn.
+nFest  = floor(v.Duration * fs) + 5;
+nTotal = nStructPts + nPat;
+trkX   = nan(nFest, nTotal);
+trkY   = nan(nFest, nTotal);
+trkX(1, 1:nStructPts)         = pts0(:,1).';
+trkY(1, 1:nStructPts)         = pts0(:,2).';
+trkX(1, nStructPts+1:end)     = accPos0(:,1).';
+trkY(1, nStructPts+1:end)     = accPos0(:,2).';
 
-curLinePos = pts0;
-curAccPos  = accPos0;
-searchPad     = 10;     % extra pixels around the line-point template
-accSearchPad  = 30;     % extra pixels around the accelerometer template
+curLinePos   = pts0;
+curAccPos    = accPos0;
+searchPad    = 10;     % extra pixels around the line-point template
+accSearchPad = 30;     % extra pixels around the accelerometer template
 
 i = 1; hWait = waitbar(0, 'Tracking video...');
 while hasFrame(v)
@@ -110,7 +115,7 @@ while hasFrame(v)
     fr     = readFrame(v);
     frGray = im2gray(fr);
 
-    % --- line points (small templates) ---
+    % --- line points ---
     for j = 1:nStructPts
         tmpl = lineTmpl{j};
         [tH, tW] = size(tmpl);
@@ -120,7 +125,7 @@ while hasFrame(v)
         sc1 = max(1, cx-sH);  sc2 = min(size(frGray,2), cx+sH);
         region = frGray(sr1:sr2, sc1:sc2);
         if size(region,1) < tH || size(region,2) < tW
-            trkY(i,j) = NaN;  continue;
+            continue;
         end
         C = normxcorr2(tmpl, region);
         [~, mi] = max(C(:));
@@ -128,10 +133,11 @@ while hasFrame(v)
         newY = sr1 + pr - tH + floor(tH/2);
         newX = sc1 + pc - tW + floor(tW/2);
         curLinePos(j,:) = [newX, newY];
+        trkX(i, j) = newX;
         trkY(i, j) = newY;
     end
 
-    % --- accelerometer rectangles (one large template each) ---
+    % --- accelerometer rectangles ---
     for k = 1:nPat
         tmpl = accTmpl{k};
         tH = accTH(k);  tW = accTW(k);
@@ -142,7 +148,7 @@ while hasFrame(v)
         sc2 = min(size(frGray,2), round(cx + tW/2 + accSearchPad));
         region = frGray(sr1:sr2, sc1:sc2);
         if size(region,1) < tH || size(region,2) < tW
-            trkY(i, nStructPts+k) = NaN;  continue;
+            continue;
         end
         C = normxcorr2(tmpl, region);
         [~, mi] = max(C(:));
@@ -150,6 +156,7 @@ while hasFrame(v)
         newY = sr1 + pr - tH + floor(tH/2);
         newX = sc1 + pc - tW + floor(tW/2);
         curAccPos(k,:) = [newX, newY];
+        trkX(i, nStructPts+k) = newX;
         trkY(i, nStructPts+k) = newY;
     end
 
@@ -157,19 +164,26 @@ while hasFrame(v)
 end
 close(hWait);
 nF   = i;
+trkX = trkX(1:nF, :);
 trkY = trkY(1:nF, :);
 t    = (0:nF-1).' / fs;
 fprintf('Tracked %d frames (%.2f s)\n', nF, t(end));
 
-%% ----- TIME HISTORIES (Y displacement in px) ----------------------------
+%% ----- TIME HISTORIES (X and Y displacement in px) ---------------------
+X = trkX - trkX(1, :);
 Y = trkY - trkY(1, :);
+X = fillmissing(X, 'linear', 1, 'EndValues', 'nearest');
 Y = fillmissing(Y, 'linear', 1, 'EndValues', 'nearest');
+X = detrend(X, 1);
 Y = detrend(Y, 1);
 
-Y_struct = Y(:, 1:nStructPts);            % line points
-Y_acc    = Y(:, nStructPts+1:end);        % one signal per accelerometer ROI
+X_struct = X(:, 1:nStructPts);
+Y_struct = Y(:, 1:nStructPts);
+Y_acc    = Y(:, nStructPts+1:end);
 
 %% ----- PSD: periodogram on active window, no zero padding ---------------
+% Modal frequency identification uses Y (the dominant direction of the
+% bandpass-magnified mode). The mode shape itself is computed in 2-D.
 tMask = t >= analysisWindow(1) & t <= analysisWindow(2);
 nWin  = sum(tMask);
 win   = hann(nWin, 'periodic');
@@ -180,7 +194,6 @@ fprintf('Analysis window: %.2f-%.2f s (%d samples, df = %.4f Hz)\n', ...
 [Pxx,  f] = periodogram(Y_struct(tMask, :), win, nWin, fs);
 [Pacc, ~] = periodogram(Y_acc(tMask, :),    win, nWin, fs);
 
-% Per-line average PSD (lines = mean of N points; accel = the single signal)
 Pline = zeros(numel(f), nLines + nPat);
 for k = 1:nLines
     Pline(:, k) = mean(Pxx(:, (k-1)*N + (1:N)), 2);
@@ -188,7 +201,6 @@ end
 for k = 1:nPat
     Pline(:, nLines+k) = Pacc(:, k);
 end
-% Cross-portion average over structural lines
 Pglobal = mean(Pline(:, 1:nLines), 2);
 
 %% ----- BIN-SNAP PEAK DETECTION inside magBand ---------------------------
@@ -196,18 +208,12 @@ bandIdx = f >= magBand(1) & f <= magBand(2);
 fb      = f(bandIdx);
 peakHz  = @(P) bandArgMax(P, bandIdx, fb);
 
-% Per-point peaks: line points + one peak per accelerometer ROI
 peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),  1:nStructPts).';
 peakAccPP    = arrayfun(@(j) peakHz(Pacc(:,j)), 1:nPat).';
 peakAllPts   = [peakStructPP; peakAccPP];
-
-% Per-line averaged-PSD peak (line-by-line OR one per accel)
 peakPerLine  = arrayfun(@(k) peakHz(Pline(:,k)), 1:(nLines+nPat)).';
-
-% Global peak (peak of the cross-portion average over structural lines)
 peakGlobal   = peakHz(Pglobal);
 
-% Overall pooled statistics
 muPeak = mean(peakAllPts);
 sdPeak = std(peakAllPts);
 errPct = 100 * abs(peakGlobal - accelTargetHz) / accelTargetHz;
@@ -220,15 +226,10 @@ fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d)\n', ...
     muPeak, sdPeak, numel(peakAllPts));
 
 %% ----- ROI SIGNAL QUALITY (out-of-band SNR) -----------------------------
-% A good modal response sticks well above the OUT-OF-BAND noise floor.
-% In-band median is not a useful baseline here because the magnification
-% flattens the response across magBand, so peak/in-band-median is ~5 even
-% for clean ROIs. Compare instead to median of bins OUTSIDE magBand
-% but inside the plot range.
 outBandIdx = ((f >= spectraXLim(1)) & (f <  magBand(1))) | ...
              ((f >  magBand(2))     & (f <= spectraXLim(2)));
 fprintf('\n===== ROI SIGNAL QUALITY (peak vs out-of-band noise floor) =====\n');
-snrFloorDb = 20;     % below this we flag the ROI as untrustworthy (~100x linear)
+snrFloorDb = 20;
 for k = 1:nPat
     Pk     = Pacc(:, k);
     pkVal  = max(Pk(bandIdx));
@@ -258,7 +259,7 @@ pairNames = strings(1, nPairs);
 for k = 1:nPairs
     a = pairs(k,1);  b = pairs(k,2);
     Gxy = Yfft(:,a) .* conj(Yfft(:,b)) * scale;
-    Gxy(2:end-1) = 2 * Gxy(2:end-1);          % single-sided
+    Gxy(2:end-1) = 2 * Gxy(2:end-1);
     CPSD(:, k)   = Gxy;
     pairNames(k) = sprintf('%s - %s', accelPatternLabels{a}, accelPatternLabels{b});
 end
@@ -289,10 +290,45 @@ for k = 1:nPairs
         pairNames(k), bestLag(k), bestPhase(k));
 end
 
+%% ----- OPERATIONAL MODE SHAPE at peakGlobal (2-D) ----------------------
+% At a single dominant frequency, the displacement of each point is
+%     d_x(t) = Re( Ux * exp(-i*2*pi*f*t) )
+%     d_y(t) = Re( Uy * exp(-i*2*pi*f*t) )
+% where Ux, Uy are the complex FFT coefficients at the peak bin.
+% We render the snapshot at the phase phi* that maximises the L2 norm
+% of the deflection over all line points:
+%     phi* = 0.5 * angle( sum_j (Ux_j^2 + Uy_j^2) )
+% i.e. the instant of maximum collective displacement.
+Xwin = X_struct(tMask, :) .* win;
+Ywin = Y_struct(tMask, :) .* win;
+Xspec = fft(Xwin, nWin);
+Yspec = fft(Ywin, nWin);
+fMode = (0:floor(nWin/2)).' * fs / nWin;
+[~, ipk] = min(abs(fMode - peakGlobal));
+Ux = Xspec(ipk, :).';
+Uy = Yspec(ipk, :).';
+phiStar = 0.5 * angle( sum(Ux.^2 + Uy.^2) );
+dx = real(Ux * exp(-1i * phiStar));
+dy = real(Uy * exp(-1i * phiStar));
+
+% Visual magnification: 'auto' targets ~5% of image height for the
+% largest deflection, otherwise use the user-supplied number.
+maxDef = max(hypot(dx, dy));
+if isnumeric(modeShapeVisualMag)
+    visMag = modeShapeVisualMag;
+else
+    targetDef = 0.05 * size(firstFrame, 1);
+    visMag    = max(1, round(targetDef / max(maxDef, eps)));
+end
+xRef = pts0(:,1);  yRef = pts0(:,2);
+xDef = xRef + visMag * dx;
+yDef = yRef + visMag * dy;
+fprintf('\nMode shape at %.3f Hz: max real deflection = %.3f px, visual mag = x%d\n', ...
+    peakGlobal, maxDef, visMag);
+
 %% ----- SAVE TABLES (CSV) ------------------------------------------------
 groupLabels = [string(lineLabels), string(accelPatternLabels)];
 
-% Time histories (structural + per-ROI accelerometer)
 colNames = strings(1, nStructPts + nPat);
 for k = 1:nLines
     for j = 1:N
@@ -305,7 +341,6 @@ end
 THtbl = array2table([t, Y_struct, Y_acc], 'VariableNames', ['time_s' cellstr(colNames)]);
 writetable(THtbl, fullfile(outputDir,'time_histories_Y_px.csv'));
 
-% Per-point peaks
 ppGroup = strings(numel(peakAllPts), 1);
 for k = 1:nLines
     ppGroup((k-1)*N + (1:N)) = string(lineLabels{k});
@@ -316,18 +351,25 @@ end
 writetable(table(ppGroup, peakAllPts, 'VariableNames', {'Group','PeakHz'}), ...
     fullfile(outputDir,'per_point_peaks.csv'));
 
-% Summary: per-line + overall pooled
 peakSummary = table(groupLabels(:), peakPerLine, 'VariableNames', {'Group','AvgPSDPeakHz'});
-overallRow = table("OVERALL_POOLED", muPeak, 'VariableNames', {'Group','AvgPSDPeakHz'});
-peakSummary = [peakSummary; overallRow];
+peakSummary = [peakSummary; table("OVERALL_POOLED", muPeak, ...
+    'VariableNames', {'Group','AvgPSDPeakHz'})];
 peakSummary.Mean_pm_Std = strings(height(peakSummary), 1);
 peakSummary.Mean_pm_Std(end) = sprintf('%.4f +/- %.4f Hz (n=%d)', muPeak, sdPeak, numel(peakAllPts));
 writetable(peakSummary, fullfile(outputDir,'peak_summary.csv'));
 
-% Cross-correlation results
 writetable(table(pairNames(:), bestLag, bestPhase, ...
     'VariableNames', {'Pair','Lag_s','Phase_deg_at_peak'}), ...
     fullfile(outputDir,'xcorr_lag_phase.csv'));
+
+% Mode shape (reference + deflected pixel coordinates per point)
+msGroup = strings(nStructPts, 1);
+for k = 1:nLines
+    msGroup((k-1)*N + (1:N)) = string(lineLabels{k});
+end
+writetable(table(msGroup, xRef, yRef, dx, dy, xDef, yDef, ...
+    'VariableNames', {'Group','xRef_px','yRef_px','dx_px','dy_px','xDef_px','yDef_px'}), ...
+    fullfile(outputDir,'mode_shape_at_peak.csv'));
 
 %% ===== PLOTS =============================================================
 saveHQ = @(fig,name) exportgraphics(fig, fullfile(outputDir,[name '.png']), 'Resolution', 300);
@@ -357,33 +399,28 @@ xlabel('Time [s]');
 saveHQ(fig, '02_time_histories');
 
 %% ----- Plot: PSDs per group --------------------------------------------
-% Lines: N individual point PSDs (dotted) + bold black average
-% Accelerometers: one PSD (bold black) - single template per ROI
 for k = 1:(nLines + nPat)
     fig = figure('Name', sprintf('PSD %s', groupLabels{k}), 'Color', 'w', ...
         'Position', [80 80 1100 600]);
     ax = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 
     if k <= nLines
-        Pcols = Pxx(:, (k-1)*N + (1:N));
-        hInd  = semilogy(ax, f, max(Pcols, eps), ':', 'LineWidth', 1.0, 'Color',[0.55 0.55 0.55]);
-        Pavg  = mean(Pcols, 2);
+        Pcols   = Pxx(:, (k-1)*N + (1:N));
+        hInd    = semilogy(ax, f, max(Pcols, eps), ':', 'LineWidth', 1.0, 'Color',[0.55 0.55 0.55]);
+        Pavg    = mean(Pcols, 2);
         nCurves = size(Pcols, 2);
         indLabel = sprintf('Individual PSDs (n=%d)', nCurves);
     else
         Pavg = Pacc(:, k-nLines);
-        hInd = [];                     % no individual curves for accel
+        hInd = [];
         indLabel = '';
     end
 
     hAvg = semilogy(ax, f, max(Pavg, eps), 'k-', 'LineWidth', 3.0);
 
-    % Bin-snap peak from the average
     pkHz = peakHz(Pavg);
     hPk  = xline(ax, pkHz, 'r--', sprintf('video peak = %.3f Hz', pkHz), ...
         'LineWidth', 1.6, 'LabelOrientation','horizontal','Color',[0.85 0.1 0.1]);
-
-    % Accelerometer reference
     hRef = xline(ax, accelTargetHz, '-', sprintf('accel = %.2f Hz', accelTargetHz), ...
         'LineWidth', 2.0, 'Color',[0.05 0.3 0.85], 'LabelOrientation','horizontal', ...
         'LabelVerticalAlignment','bottom');
@@ -404,11 +441,9 @@ for k = 1:(nLines + nPat)
     saveHQ(fig, sprintf('03_PSD_%s', matlab.lang.makeValidName(groupLabels{k})));
 end
 
-%% ----- Plot: overall pooled peak (mean +/- std of all per-point peaks) ---
+%% ----- Plot: overall pooled peak ----------------------------------------
 fig = figure('Name','Overall pooled peak','Color','w','Position',[80 80 1100 600]);
 ax  = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
-
-% Dots aligned vertically per group (no jitter)
 xc  = 1:(nLines+nPat);
 hSc = [];
 for k = 1:nLines
@@ -426,15 +461,12 @@ end
 hSc.HandleVisibility = 'on';
 hSc.DisplayName = sprintf('Individual point peaks (n = %d)', numel(peakAllPts));
 
-% Pooled mean +/- std as a horizontal band
 xR = [0.5, nLines+nPat+0.5];
 fill(ax, [xR fliplr(xR)], [muPeak-sdPeak muPeak-sdPeak muPeak+sdPeak muPeak+sdPeak], ...
     [0.10 0.30 0.75], 'FaceAlpha', 0.18, 'EdgeColor','none', ...
     'DisplayName', sprintf('Overall mean \\pm 1\\sigma'));
 yline(ax, muPeak, '-', 'LineWidth', 2.5, 'Color',[0.10 0.30 0.75], ...
     'DisplayName', sprintf('Overall mean = %.4f Hz', muPeak));
-
-% Accelerometer reference
 yline(ax, accelTargetHz, '--', 'LineWidth', 2.0, 'Color',[0.75 0.10 0.10], ...
     'DisplayName', sprintf('Accel = %.2f Hz', accelTargetHz));
 
@@ -498,6 +530,66 @@ title(ax, sprintf('Time-domain xcorr (no additional filtering, window %.1f-%.1f 
 legend(ax,'Location','northeastoutside');
 saveHQ(fig, '06_time_xcorr');
 
+%% ----- Plot: 2-D MODE SHAPE OVERLAY on the first frame -----------------
+% Three things per portion are drawn on the first frame:
+%   1. drawn line   - yellow dashed - endpoints of the user-drawn line
+%   2. ref          - solid colored, thin - through tracked initial points
+%   3. def (xVis)   - solid colored, thick + square markers - through the
+%                     deflected positions at the moment of maximum collective
+%                     displacement (visually magnified)
+% Thin colored "drift" segments connect each ref point to its def position
+% so the displacement vector of every point is visible.
+fig = figure('Name','Mode shape overlay','Color','k','Position',[60 60 1500 900]);
+ax  = axes(fig);
+imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
+
+% High-contrast colors for portions (good on dark/gray backgrounds)
+portionColors = {[0.10 0.85 1.00], [0.20 1.00 0.30], ...
+                 [1.00 0.55 0.10], [1.00 0.20 0.85]};
+hLegEntries = gobjects(0);
+legNames    = strings(0);
+
+for k = 1:nLines
+    idx = (k-1)*N + (1:N);
+    cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
+
+    % 1. Drawn line (yellow dashed)
+    hDr = plot(ax, [lineCoords(k,1) lineCoords(k,3)], ...
+                   [lineCoords(k,2) lineCoords(k,4)], ...
+        '--', 'Color', [1 1 0], 'LineWidth', 2.2);
+
+    % 2. Reference (initial tracked-point polyline)
+    hRf = plot(ax, xRef(idx), yRef(idx), '-', 'Color', cl, 'LineWidth', 1.3);
+
+    % drift segments per point (no legend entry)
+    for j = idx
+        plot(ax, [xRef(j) xDef(j)], [yRef(j) yDef(j)], '-', ...
+            'Color', [cl 0.5], 'LineWidth', 0.9, 'HandleVisibility','off');
+    end
+
+    % 3. Deflected shape
+    hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.0);
+    plot(ax, xDef(idx), yDef(idx), 's', 'Color', cl, ...
+        'MarkerFaceColor', cl, 'MarkerSize', 8, 'HandleVisibility','off');
+
+    % reference markers
+    plot(ax, xRef(idx), yRef(idx), 'o', 'Color', cl, ...
+        'MarkerFaceColor', 'none', 'MarkerSize', 6, 'HandleVisibility','off');
+
+    hLegEntries = [hLegEntries, hDr, hRf, hDe];
+    legNames    = [legNames, ...
+        string(lineLabels{k}) + " --- drawn", ...
+        string(lineLabels{k}) + " --- ref", ...
+        string(lineLabels{k}) + sprintf(" --- def (x%d)", visMag)];
+end
+
+ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (x%d visual)', peakGlobal, visMag), ...
+    'Color', 'w', 'FontSize', 13, 'FontWeight','bold');
+lg = legend(hLegEntries, legNames, 'Location','northoutside', ...
+    'Orientation','horizontal', 'NumColumns', nLines, ...
+    'TextColor','w', 'Color','k', 'EdgeColor',[0.6 0.6 0.6], 'FontSize', 10);
+saveHQ(fig, '07_mode_shape_overlay');
+
 %% ----- Final summary printout -------------------------------------------
 fprintf('\n===== SAVED TO: %s =====\n', outputDir);
 fprintf('Headline result for the paper:\n');
@@ -505,11 +597,10 @@ fprintf('  Video natural frequency  : %.4f Hz  (peak of cross-portion avg PSD)\n
 fprintf('  Pooled per-point average : %.4f +/- %.4f Hz   (n=%d, df=%.3f Hz)\n', ...
     muPeak, sdPeak, numel(peakAllPts), df);
 fprintf('  Accelerometer reference  : %.2f Hz  (error %.2f%%)\n', accelTargetHz, errPct);
+fprintf('  Mode shape rendered at   : %.3f Hz   (visual magnification x%d)\n', peakGlobal, visMag);
 
 %% ===== LOCAL FUNCTION ===================================================
 function fpk = bandArgMax(P, bandIdx, fb)
-    % Bin-snap peak: frequency of the bin with maximum dB-PSD in the band.
-    % No interpolation; uncertainty floor is df/2.
     Pb = P(bandIdx);
     if isempty(Pb), fpk = NaN; return; end
     [~, im] = max(10*log10(max(Pb, eps)));
