@@ -25,6 +25,14 @@ modeShapeVisualMag = 'auto';
 % strictly vertical or horizontal.
 calibrationRefLength_mm = 1265;     % real length of the click-to-click feature
 
+% Tracking robustness
+useSubpixelNCC     = true;     % parabolic refinement of the NCC peak (sub-pixel resolution)
+applyContrastBoost = true;     % CLAHE on the frame before NCC (helps low-contrast ROIs)
+nccConfidenceMin   = 0.30;     % NCC peak below this -> hold previous position
+halfPatch          = 25;       % line-point template half-size (px) -> (2*halfPatch+1)^2
+accSearchPad       = 30;       % search padding around accelerometer template (px)
+searchPad          = 12;       % search padding around line-point template (px)
+
 % Output folder on the Desktop (timestamped so runs don't overwrite)
 desktopDir = fullfile(getenv('USERPROFILE'), 'Desktop');
 if isempty(desktopDir) || ~isfolder(desktopDir), desktopDir = pwd; end
@@ -37,6 +45,9 @@ v  = VideoReader(videoFile);
 fs = v.FrameRate;
 firstFrame = readFrame(v);
 firstGray  = im2gray(firstFrame);
+if applyContrastBoost
+    firstGray = adapthisteq(firstGray, 'ClipLimit', 0.02);
+end
 fprintf('Video: %dx%d @ %.2f fps, %.2f s\n', v.Width, v.Height, fs, v.Duration);
 
 %% ----- CALIBRATION: pixel -> millimetre ---------------------------------
@@ -110,8 +121,6 @@ nStructPts = ptr;
 pts0       = zeros(nStructPts, 2);
 lineTmpl   = cell(nStructPts, 1);
 isJoint    = false(nStructPts, 1);   % true where pts0(j) is a polyline vertex
-halfPatch  = 20;     % half-size of the line-point template (px) -> 41x41
-
 for k = 1:nLines
     verts  = lineVerts{k};
     M      = size(verts, 1);
@@ -204,14 +213,16 @@ trkY(1, nStructPts+1:end)     = accPos0(:,2).';
 
 curLinePos   = pts0;
 curAccPos    = accPos0;
-searchPad    = 10;     % extra pixels around the line-point template
-accSearchPad = 30;     % extra pixels around the accelerometer template
+nccFailCount = zeros(nStructPts + nPat, 1);   % per-point low-confidence frame counter
 
 i = 1; hWait = waitbar(0, 'Tracking video...');
 while hasFrame(v)
     i = i + 1;
     fr     = readFrame(v);
     frGray = im2gray(fr);
+    if applyContrastBoost
+        frGray = adapthisteq(frGray, 'ClipLimit', 0.02);
+    end
 
     % --- line points ---
     for j = 1:nStructPts
@@ -226,10 +237,16 @@ while hasFrame(v)
             continue;
         end
         C = normxcorr2(tmpl, region);
-        [~, mi] = max(C(:));
-        [pr, pc] = ind2sub(size(C), mi);
-        newY = sr1 + pr - tH + floor(tH/2);
-        newX = sc1 + pc - tW + floor(tW/2);
+        [pr_sub, pc_sub, maxC] = nccPeakSubpixel(C, useSubpixelNCC);
+        if maxC < nccConfidenceMin
+            % Low-confidence frame: hold previous position
+            trkX(i, j) = trkX(i-1, j);
+            trkY(i, j) = trkY(i-1, j);
+            nccFailCount(j) = nccFailCount(j) + 1;
+            continue;
+        end
+        newY = sr1 + pr_sub - tH + floor(tH/2);
+        newX = sc1 + pc_sub - tW + floor(tW/2);
         curLinePos(j,:) = [newX, newY];
         trkX(i, j) = newX;
         trkY(i, j) = newY;
@@ -249,10 +266,15 @@ while hasFrame(v)
             continue;
         end
         C = normxcorr2(tmpl, region);
-        [~, mi] = max(C(:));
-        [pr, pc] = ind2sub(size(C), mi);
-        newY = sr1 + pr - tH + floor(tH/2);
-        newX = sc1 + pc - tW + floor(tW/2);
+        [pr_sub, pc_sub, maxC] = nccPeakSubpixel(C, useSubpixelNCC);
+        if maxC < nccConfidenceMin
+            trkX(i, nStructPts+k) = trkX(i-1, nStructPts+k);
+            trkY(i, nStructPts+k) = trkY(i-1, nStructPts+k);
+            nccFailCount(nStructPts+k) = nccFailCount(nStructPts+k) + 1;
+            continue;
+        end
+        newY = sr1 + pr_sub - tH + floor(tH/2);
+        newX = sc1 + pc_sub - tW + floor(tW/2);
         curAccPos(k,:) = [newX, newY];
         trkX(i, nStructPts+k) = newX;
         trkY(i, nStructPts+k) = newY;
@@ -266,6 +288,35 @@ trkX = trkX(1:nF, :);
 trkY = trkY(1:nF, :);
 t    = (0:nF-1).' / fs;
 fprintf('Tracked %d frames (%.2f s)\n', nF, t(end));
+
+% Report low-confidence frame counts per point/ROI (>5% triggers a flag)
+flagThresh = 0.05 * (nF-1);
+nFails     = nccFailCount;
+if any(nFails > 0)
+    fprintf('\n===== NCC LOW-CONFIDENCE FRAME COUNT (peak < %.2f) =====\n', nccConfidenceMin);
+    for k = 1:nLines
+        for j = 1:numel(lineIdx{k})
+            idxJ = lineIdx{k}(j);
+            if nFails(idxJ) > 0
+                flag = '';
+                if nFails(idxJ) > flagThresh
+                    flag = sprintf('  <-- %.0f%% of frames held', 100*nFails(idxJ)/(nF-1));
+                end
+                fprintf('  %s pt %d  : %d frames%s\n', lineLabels{k}, j, nFails(idxJ), flag);
+            end
+        end
+    end
+    for k = 1:nPat
+        n = nFails(nStructPts + k);
+        if n > 0
+            flag = '';
+            if n > flagThresh
+                flag = sprintf('  <-- %.0f%% of frames held', 100*n/(nF-1));
+            end
+            fprintf('  %s          : %d frames%s\n', accelPatternLabels{k}, n, flag);
+        end
+    end
+end
 
 %% ----- TIME HISTORIES (X and Y displacement in px) ---------------------
 X = trkX - trkX(1, :);
@@ -736,10 +787,37 @@ fprintf('  Mode shape rendered at   : %.3f Hz   (max deflection %.3f mm, visual 
     peakGlobal, maxDef_mm, visMag);
 fprintf('  Calibration              : %.4f mm/px   (ref length %.0f mm)\n', mmPerPixel, calibrationRefLength_mm);
 
-%% ===== LOCAL FUNCTION ===================================================
+%% ===== LOCAL FUNCTIONS ==================================================
 function fpk = bandArgMax(P, bandIdx, fb)
     Pb = P(bandIdx);
     if isempty(Pb), fpk = NaN; return; end
     [~, im] = max(10*log10(max(Pb, eps)));
     fpk = fb(im);
+end
+
+function [pr, pc, maxC] = nccPeakSubpixel(C, useSubpixel)
+    % Locate the maximum of an NCC surface and (optionally) refine it to
+    % sub-pixel accuracy with a 3-point parabolic fit along each axis.
+    [maxC, mi] = max(C(:));
+    [pr0, pc0] = ind2sub(size(C), mi);
+    pr = pr0;  pc = pc0;
+    if ~useSubpixel
+        return;
+    end
+    if pr0 > 1 && pr0 < size(C, 1)
+        a = C(pr0-1, pc0);  b = C(pr0, pc0);  c = C(pr0+1, pc0);
+        denom = a - 2*b + c;
+        if abs(denom) > eps
+            shift = 0.5 * (a - c) / denom;
+            pr = pr0 + max(min(shift, 0.5), -0.5);
+        end
+    end
+    if pc0 > 1 && pc0 < size(C, 2)
+        a = C(pr0, pc0-1);  b = C(pr0, pc0);  c = C(pr0, pc0+1);
+        denom = a - 2*b + c;
+        if abs(denom) > eps
+            shift = 0.5 * (a - c) / denom;
+            pc = pc0 + max(min(shift, 0.5), -0.5);
+        end
+    end
 end
