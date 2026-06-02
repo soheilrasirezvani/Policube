@@ -3,9 +3,9 @@ clear; clc; close all;
 %% ----- USER CONFIG -------------------------------------------------------
 videoFile = "D:\dronebasedVMM\Deep-Motion-Mag-Pytorch-main\Rightview-lab-final\9.5-10.5Hz\output_frames_P02m_30_fl9.5_fh10.5_fs60.0_n4_butter.mp4";
 
-lineLabels         = {'1st landing','2nd landing'};
+lineLabels         = {'1st landing'};
 accelPatternLabels = {'acc0','acc1','acc2','acc3'};
-nPointsPerLine     = 5;
+nPointsPerLine     = 20;
 
 % Modal analysis settings
 analysisWindow = [0 5];       % seconds, the segment where the structure rings
