@@ -26,11 +26,6 @@ halfPatch          = 25;       % line-point template half-size (px) -> (2*halfPa
 accSearchPad       = 30;       % search padding around accelerometer template (px)
 searchPad          = 12;       % search padding around line-point template (px)
 
-% Post-tracking bandpass on the displacement signals.
-% Set true to suppress out-of-band tracker noise. Filter is a 4th-order
-% Butterworth at magBand, applied zero-phase with filtfilt.
-applyPostBandpass  = true;
-
 % Output folder on the Desktop (timestamped so runs don't overwrite)
 desktopDir = fullfile(getenv('USERPROFILE'), 'Desktop');
 if isempty(desktopDir) || ~isfolder(desktopDir), desktopDir = pwd; end
@@ -314,22 +309,6 @@ Y = detrend(Y, 1);
 X_struct = X(:, 1:nStructPts);
 Y_struct = Y(:, 1:nStructPts);
 Y_acc    = Y(:, nStructPts+1:end);
-
-% Optional post-tracking bandpass. The motion-magnification network
-% acts on the input video in the frequency domain but does NOT clean
-% up tracker residuals (sub-pixel jitter, residual camera motion, MP4
-% noise) which are broadband in the time domain. A 4th-order zero-phase
-% Butterworth at magBand suppresses that out-of-band content while
-% preserving the modal signal.
-if applyPostBandpass
-    nyq = fs / 2;
-    bp  = min(max(magBand, 0.01), 0.99 * fs/2) / nyq;
-    [bF, aF] = butter(4, bp, 'bandpass');
-    X_struct = filtfilt(bF, aF, X_struct);
-    Y_struct = filtfilt(bF, aF, Y_struct);
-    Y_acc    = filtfilt(bF, aF, Y_acc);
-    fprintf('Post-tracking bandpass applied: %.1f-%.1f Hz, 4th-order Butterworth (filtfilt)\n', magBand);
-end
 
 %% ----- PSD: periodogram on active window, no zero padding ---------------
 % Modal frequency identification uses Y (the dominant direction of the
