@@ -395,6 +395,31 @@ for k = 1:nPat
         accelPatternLabels{k}, snrLin, snrDb, peakPerLine(nLines+k), flag);
 end
 
+%% ----- ROI TRACKER NOISE FLOOR (time-domain) ----------------------------
+% Take the QUIESCENT portions of the signal (before the impulse and after
+% the ring-down) as a direct measurement of the tracker noise floor in mm.
+% Then compare to the peak-to-peak amplitude during the active period.
+% If the noise floor is comparable to the peak amplitude, you ARE seeing
+% the structural decay - it is just buried in tracker noise.
+quietBefore = t < 1.0;
+quietAfter  = t > 3.5 & t <= 5.0;
+quietMask   = quietBefore | quietAfter;
+activeMask  = t >= 1.0 & t <= 3.0;
+fprintf('\n===== TRACKER NOISE FLOOR vs MODAL SIGNAL (time domain) =====\n');
+fprintf('  quiet windows: t<1.0 s and 3.5<t<=5.0 s  |  active: 1.0<=t<=3.0 s\n');
+for k = 1:nPat
+    s   = Y_acc(:, k);
+    nFlo = std(s(quietMask), 0);
+    pk   = max(abs(s(activeMask)));
+    snrA = pk / max(nFlo, eps);
+    flag = '';
+    if snrA < 5
+        flag = '  <-- tracker noise dominates';
+    end
+    fprintf('  %-6s  noise floor = %.3f mm   active peak = %.3f mm   ratio = %5.1fx%s\n', ...
+        accelPatternLabels{k}, nFlo, pk, snrA, flag);
+end
+
 %% ----- CROSS-SPECTRUM (magnitude + phase) between accel ROIs ------------
 patSig = detrend(Y_acc(tMask, :), 1);
 Yfft   = fft(patSig .* win, nWin);
