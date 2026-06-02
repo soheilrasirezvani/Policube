@@ -707,17 +707,18 @@ saveHQ(fig, '06_time_xcorr');
 %                     displacement (visually magnified)
 % Thin colored "drift" segments connect each ref point to its def position
 % so the displacement vector of every point is visible.
-fig = figure('Name','Mode shape overlay','Color','k','Position',[60 60 1500 900]);
+fig = figure('Name','Mode shape overlay','Color','w','Position',[60 60 1500 900]);
 ax  = axes(fig);
 imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
 
-% High-contrast saturated colors per portion. Each element of the plot
-% is drawn with a black halo first so it stays readable on light AND
-% dark backgrounds (steel / glass / shadow all show up in your clips).
-portionColors = {[1.00 0.20 0.85], ... % magenta
-                 [0.10 0.85 1.00], ... % cyan
-                 [0.30 1.00 0.15], ... % lime
-                 [1.00 0.55 0.10]};    % orange
+% Per-portion colors. First portion uses red as the deflected line; the
+% rest cycle through other saturated colors so multi-portion analyses
+% remain distinguishable. The reference polyline is white (with a thin
+% black halo for readability over light pixels).
+portionColors = {[0.85 0.10 0.10], ... % red
+                 [0.10 0.40 0.85], ... % blue
+                 [0.10 0.60 0.20], ... % dark green
+                 [0.60 0.20 0.70]};    % purple
 hLegEntries = gobjects(0);
 legNames    = strings(0);
 
@@ -732,32 +733,32 @@ for k = 1:nLines
             'Color', [cl 0.55], 'LineWidth', 1.0, 'HandleVisibility','off');
     end
 
-    % 2. Drawn polyline = reference shape (black halo + yellow dashed)
+    % 2. Reference polyline = drawn shape (thin black halo + white dashed)
     plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '-', ...
-        'Color', 'k', 'LineWidth', 4.5, 'HandleVisibility','off');
+        'Color', 'k', 'LineWidth', 4.0, 'HandleVisibility','off');
     hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '--', ...
-        'Color', [1 1 0], 'LineWidth', 2.5);
+        'Color', 'w', 'LineWidth', 2.4);
 
-    % 3. Reference sample-point markers (white circles outlined in black)
+    % 3. Reference sample-point markers (gray circles outlined in black)
     %    Joints (polyline vertices) drawn as larger yellow diamonds.
     plot(ax, xRef(idx(~jointMask)), yRef(idx(~jointMask)), 'o', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'w', 'MarkerSize', 7, ...
-        'LineWidth', 0.8, 'HandleVisibility','off');
+        'MarkerEdgeColor', 'k', 'MarkerFaceColor', [0.5 0.5 0.5], ...
+        'MarkerSize', 7, 'LineWidth', 0.8, 'HandleVisibility','off');
     plot(ax, xRef(idx(jointMask)), yRef(idx(jointMask)), 'd', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', [1 1 0], 'MarkerSize', 11, ...
-        'LineWidth', 1.0, 'HandleVisibility','off');
+        'MarkerEdgeColor', 'k', 'MarkerFaceColor', [1.00 0.85 0.10], ...
+        'MarkerSize', 11, 'LineWidth', 1.0, 'HandleVisibility','off');
 
     % 4. Deflected polyline (black halo + saturated color on top)
     %    Joints drawn as larger yellow-edged diamonds in the portion color.
     plot(ax, xDef(idx), yDef(idx), '-', ...
-        'Color', 'k', 'LineWidth', 5.5, 'HandleVisibility','off');
+        'Color', 'k', 'LineWidth', 5.0, 'HandleVisibility','off');
     hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.2);
     plot(ax, xDef(idx(~jointMask)), yDef(idx(~jointMask)), 's', ...
         'MarkerEdgeColor', 'k', 'MarkerFaceColor', cl, 'MarkerSize', 9, ...
         'LineWidth', 0.8, 'HandleVisibility','off');
     hJ = plot(ax, xDef(idx(jointMask)), yDef(idx(jointMask)), 'd', ...
-        'MarkerEdgeColor', [1 1 0], 'MarkerFaceColor', cl, 'MarkerSize', 13, ...
-        'LineWidth', 1.6);
+        'MarkerEdgeColor', [1.00 0.85 0.10], 'MarkerFaceColor', cl, ...
+        'MarkerSize', 13, 'LineWidth', 1.6);
 
     hLegEntries = [hLegEntries, hDr, hDe];
     legNames    = [legNames, ...
@@ -770,10 +771,10 @@ for k = 1:nLines
 end
 
 ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (x%d visual)', peakGlobal, visMag), ...
-    'Color', 'w', 'FontSize', 13, 'FontWeight','bold');
+    'Color', 'k', 'FontSize', 13, 'FontWeight','bold');
 lg = legend(hLegEntries, legNames, 'Location','northoutside', ...
     'Orientation','horizontal', 'NumColumns', nLines, ...
-    'TextColor','w', 'Color','k', 'EdgeColor',[0.6 0.6 0.6], 'FontSize', 10);
+    'TextColor','k', 'Color','w', 'EdgeColor',[0.3 0.3 0.3], 'FontSize', 10);
 saveHQ(fig, '07_mode_shape_overlay');
 
 %% ----- Final summary printout -------------------------------------------
