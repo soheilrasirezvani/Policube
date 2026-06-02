@@ -18,13 +18,6 @@ spectraXLim    = [8 19];      % Hz, x-axis for spectra plots
 %   number  -> e.g. 400 (matches the example you sent)
 modeShapeVisualMag = 'auto';
 
-% Pixel -> millimetre calibration. You will be prompted to click the two
-% endpoints of a feature whose real-world length is calibrationRefLength_mm
-% (a railing height, a stair tread, etc.). The Euclidean pixel distance
-% between the two clicks is used, so the reference does not need to be
-% strictly vertical or horizontal.
-calibrationRefLength_mm = 1265;     % real length of the click-to-click feature
-
 % Tracking robustness
 useSubpixelNCC     = true;     % parabolic refinement of the NCC peak (sub-pixel resolution)
 applyContrastBoost = true;     % CLAHE on the frame before NCC (helps low-contrast ROIs)
@@ -34,9 +27,8 @@ accSearchPad       = 30;       % search padding around accelerometer template (p
 searchPad          = 12;       % search padding around line-point template (px)
 
 % Post-tracking bandpass on the displacement signals.
-% Set true to suppress out-of-band tracker noise (~0.3 mm broadband
-% residual from drone motion + magnification jitter). Filter is a
-% 4th-order Butterworth at magBand, applied zero-phase with filtfilt.
+% Set true to suppress out-of-band tracker noise. Filter is a 4th-order
+% Butterworth at magBand, applied zero-phase with filtfilt.
 applyPostBandpass  = true;
 
 % Output folder on the Desktop (timestamped so runs don't overwrite)
@@ -55,24 +47,6 @@ if applyContrastBoost
     firstGray = adapthisteq(firstGray, 'ClipLimit', 0.02);
 end
 fprintf('Video: %dx%d @ %.2f fps, %.2f s\n', v.Width, v.Height, fs, v.Duration);
-
-%% ----- CALIBRATION: pixel -> millimetre ---------------------------------
-% Click two points on a feature of known real-world length. The Euclidean
-% pixel distance between clicks calibrates the rest of the script: every
-% displacement, PSD and printout downstream is converted to mm.
-figCal = figure('Name','Calibration','Color','w','NumberTitle','off');
-imshow(firstFrame);
-title(sprintf('Click TWO endpoints of a feature %.0f mm long (Esc to cancel)', ...
-    calibrationRefLength_mm));
-[xClicks, yClicks] = ginput(2);
-close(figCal);
-pixelLength = hypot(xClicks(2)-xClicks(1), yClicks(2)-yClicks(1));
-if pixelLength < 5
-    error('Calibration clicks too close (%.1f px). Re-run and click further apart.', pixelLength);
-end
-mmPerPixel = calibrationRefLength_mm / pixelLength;
-fprintf('Calibration: %.4f mm/px   (%.1f px = %.0f mm)\n', ...
-    mmPerPixel, pixelLength, calibrationRefLength_mm);
 
 %% ----- DRAW STRUCTURAL LINES (mouse) ------------------------------------
 nLines = numel(lineLabels);
@@ -332,11 +306,14 @@ Y = fillmissing(Y, 'linear', 1, 'EndValues', 'nearest');
 X = detrend(X, 1);
 Y = detrend(Y, 1);
 
-% Convert pixel displacements to millimetres once. Everything downstream
-% (PSDs, peak amplitudes, mode-shape Ux/Uy, CSVs) is in mm.
-X_struct = X(:, 1:nStructPts)         * mmPerPixel;
-Y_struct = Y(:, 1:nStructPts)         * mmPerPixel;
-Y_acc    = Y(:, nStructPts+1:end)     * mmPerPixel;
+% Displacements stay in pixels. The camera viewing angle makes
+% mm-per-pixel vary across the frame (perspective), so a single
+% scalar calibration would be wrong for every point except the one
+% used to compute it. Report in pixels and let the reader interpret
+% relative amplitudes.
+X_struct = X(:, 1:nStructPts);
+Y_struct = Y(:, 1:nStructPts);
+Y_acc    = Y(:, nStructPts+1:end);
 
 % Optional post-tracking bandpass. The motion-magnification network
 % acts on the input video in the frequency domain but does NOT clean
@@ -419,10 +396,10 @@ end
 
 %% ----- ROI TRACKER NOISE FLOOR (time-domain) ----------------------------
 % Take the QUIESCENT portions of the signal (before the impulse and after
-% the ring-down) as a direct measurement of the tracker noise floor in mm.
-% Then compare to the peak-to-peak amplitude during the active period.
-% If the noise floor is comparable to the peak amplitude, you ARE seeing
-% the structural decay - it is just buried in tracker noise.
+% the ring-down) as a direct measurement of the tracker noise floor in
+% pixels. Then compare to the peak-to-peak amplitude during the active
+% period. If the noise floor is comparable to the peak amplitude, you
+% ARE seeing the structural decay - it is just buried in tracker noise.
 quietBefore = t < 1.0;
 quietAfter  = t > 3.5 & t <= 5.0;
 quietMask   = quietBefore | quietAfter;
@@ -438,7 +415,7 @@ for k = 1:nPat
     if snrA < 5
         flag = '  <-- tracker noise dominates';
     end
-    fprintf('  %-6s  noise floor = %.3f mm   active peak = %.3f mm   ratio = %5.1fx%s\n', ...
+    fprintf('  %-6s  noise floor = %.3f px   active peak = %.3f px   ratio = %5.1fx%s\n', ...
         accelPatternLabels{k}, nFlo, pk, snrA, flag);
 end
 
@@ -515,26 +492,23 @@ Ux = Xspec(ipk, :).' / windowGain;
 Uy = Yspec(ipk, :).' / windowGain;
 
 phiStar = 0.5 * angle( sum(Ux.^2 + Uy.^2) );
-dx_mm = real(Ux * exp(-1i * phiStar));     % per-point deflection in mm
-dy_mm = real(Uy * exp(-1i * phiStar));
-dx_px = dx_mm / mmPerPixel;                % same deflection back in pixels
-dy_px = dy_mm / mmPerPixel;                % (needed for the image overlay)
+dx = real(Ux * exp(-1i * phiStar));        % per-point deflection in pixels
+dy = real(Uy * exp(-1i * phiStar));
 
 % Visual magnification: 'auto' targets ~5% of image height for the
 % largest pixel deflection, otherwise use the user-supplied number.
-maxDef_px = max(hypot(dx_px, dy_px));
-maxDef_mm = max(hypot(dx_mm, dy_mm));
+maxDef = max(hypot(dx, dy));
 if isnumeric(modeShapeVisualMag)
     visMag = modeShapeVisualMag;
 else
     targetDef = 0.05 * size(firstFrame, 1);
-    visMag    = max(1, round(targetDef / max(maxDef_px, eps)));
+    visMag    = max(1, round(targetDef / max(maxDef, eps)));
 end
 xRef = pts0(:,1);  yRef = pts0(:,2);
-xDef = xRef + visMag * dx_px;
-yDef = yRef + visMag * dy_px;
-fprintf('\nMode shape at %.3f Hz: max real deflection = %.3f mm (%.3f px), visual mag = x%d\n', ...
-    peakGlobal, maxDef_mm, maxDef_px, visMag);
+xDef = xRef + visMag * dx;
+yDef = yRef + visMag * dy;
+fprintf('\nMode shape at %.3f Hz: max deflection = %.3f px, visual mag = x%d\n', ...
+    peakGlobal, maxDef, visMag);
 
 %% ----- SAVE TABLES (CSV) ------------------------------------------------
 groupLabels = [string(lineLabels), string(accelPatternLabels)];
@@ -582,8 +556,8 @@ isJointCol = isJoint(:);
 for k = 1:nLines
     msGroup(lineIdx{k}) = string(lineLabels{k});
 end
-writetable(table(msGroup, isJointCol, xRef, yRef, dx_mm, dy_mm, xDef, yDef, ...
-    'VariableNames', {'Group','IsJoint','xRef_px','yRef_px','dx_mm','dy_mm','xDef_px_visAmp','yDef_px_visAmp'}), ...
+writetable(table(msGroup, isJointCol, xRef, yRef, dx, dy, xDef, yDef, ...
+    'VariableNames', {'Group','IsJoint','xRef_px','yRef_px','dx_px','dy_px','xDef_px_visAmp','yDef_px_visAmp'}), ...
     fullfile(outputDir,'mode_shape_at_peak.csv'));
 
 %% ===== PLOTS =============================================================
@@ -599,7 +573,7 @@ for k = 1:nLines
     plot(t, sig);
     xline(analysisWindow(1), 'k:', 'HandleVisibility','off');
     xline(analysisWindow(2), 'k:', 'HandleVisibility','off');
-    ylabel('Y-disp [mm]');
+    ylabel('Y-disp [px]');
     title(lineLabels{k}, 'FontWeight','normal');
 end
 for k = 1:nPat
@@ -607,7 +581,7 @@ for k = 1:nPat
     plot(t, Y_acc(:,k));
     xline(analysisWindow(1), 'k:', 'HandleVisibility','off');
     xline(analysisWindow(2), 'k:', 'HandleVisibility','off');
-    ylabel('Y-disp [mm]');
+    ylabel('Y-disp [px]');
     title(accelPatternLabels{k}, 'FontWeight','normal');
 end
 xlabel('Time [s]');
@@ -641,7 +615,7 @@ for k = 1:(nLines + nPat)
         'LabelVerticalAlignment','bottom');
 
     set(ax,'YScale','log'); xlim(ax, spectraXLim);
-    xlabel(ax,'Frequency [Hz]'); ylabel(ax,'PSD [mm^{2}/Hz]');
+    xlabel(ax,'Frequency [Hz]'); ylabel(ax,'PSD [px^{2}/Hz]');
     title(ax, sprintf('%s   |   peak of avg PSD = %.3f Hz   (df = %.3f Hz)', ...
         groupLabels{k}, pkHz, df), 'FontWeight','normal');
     if isempty(hInd)
@@ -711,7 +685,7 @@ plot(f_cs, 10*log10(max(CPSDmag_avg, eps)), 'k-', 'LineWidth', 3.0, ...
 xline(peakGlobal, 'r--', sprintf('peak = %.3f Hz', peakGlobal), 'HandleVisibility','off');
 xline(accelTargetHz, '-', sprintf('accel = %.2f Hz', accelTargetHz), ...
     'Color',[0.05 0.3 0.85], 'LineWidth', 2, 'HandleVisibility','off');
-ylabel('|CPSD| [dB ref mm^{2}/Hz]'); xlim(spectraXLim);
+ylabel('|CPSD| [dB ref px^{2}/Hz]'); xlim(spectraXLim);
 title('Cross-spectral magnitude','FontWeight','normal');
 legend('Location','northeastoutside');
 
@@ -830,9 +804,8 @@ fprintf('  Video natural frequency  : %.4f Hz  (peak of cross-portion avg PSD)\n
 fprintf('  Pooled per-point average : %.4f +/- %.4f Hz   (n=%d, df=%.3f Hz)\n', ...
     muPeak, sdPeak, numel(peakAllPts), df);
 fprintf('  Accelerometer reference  : %.2f Hz  (error %.2f%%)\n', accelTargetHz, errPct);
-fprintf('  Mode shape rendered at   : %.3f Hz   (max deflection %.3f mm, visual x%d)\n', ...
-    peakGlobal, maxDef_mm, visMag);
-fprintf('  Calibration              : %.4f mm/px   (ref length %.0f mm)\n', mmPerPixel, calibrationRefLength_mm);
+fprintf('  Mode shape rendered at   : %.3f Hz   (max deflection %.3f px, visual x%d)\n', ...
+    peakGlobal, maxDef, visMag);
 
 %% ===== LOCAL FUNCTIONS ==================================================
 function fpk = bandArgMax(P, bandIdx, fb)
