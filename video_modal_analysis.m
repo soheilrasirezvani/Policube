@@ -23,7 +23,6 @@ useSubpixelNCC     = true;     % parabolic refinement of the NCC peak (sub-pixel
 applyContrastBoost = true;     % CLAHE on the frame before NCC (helps low-contrast ROIs)
 nccConfidenceMin   = 0.30;     % NCC peak below this -> hold previous position
 halfPatch          = 25;       % line-point template half-size (px) -> (2*halfPatch+1)^2
-accSearchPad       = 30;       % search padding around accelerometer template (px)
 searchPad          = 12;       % search padding around line-point template (px)
 
 % Output folder on the Desktop (timestamped so runs don't overwrite)
@@ -150,28 +149,54 @@ end
 fprintf('Structural points: %d total (%s) - joints anchored at every polyline vertex\n', ...
     nStructPts, strjoin(arrayfun(@(x) sprintf('%d',x), linePtCount(:).', 'UniformOutput', false), '+'));
 
-%% ----- DRAW ACCELEROMETER RECTANGLES (one NCC template per ROI) ---------
-accRect = zeros(nPat, 4);
-accTmpl = cell(nPat, 1);
-accPos0 = zeros(nPat, 2);
-accTH   = zeros(nPat, 1);
-accTW   = zeros(nPat, 1);
+%% ----- DRAW ACCELEROMETER RECTANGLES (KLT corner tracking) -------------
+% Draw a rectangle on each accelerometer. KLT-trackable corner features
+% are detected inside the ROI; the per-ROI signal is the MEAN of the
+% feature positions, so the rectangle does not have to be tight and
+% the user does not need to land on a single corner.
+nFeatsAccROI = 10;          % max KLT corners per ROI
+accRect      = zeros(nPat, 4);
+accPos0      = zeros(nPat, 2);     % mean of detected features (one per ROI)
+accFeats0    = cell(nPat, 1);      % features inside each ROI, M_k x 2
 for k = 1:nPat
     title(sprintf('Draw rectangle %d/%d on %s', k, nPat, accelPatternLabels{k}));
     hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
     wait(hR);
     accRect(k,:) = hR.Position;
     roi = round(accRect(k,:));
-    x1 = max(1, roi(1));               y1 = max(1, roi(2));
-    x2 = min(size(firstGray,2), x1 + max(roi(3)-1, 0));
-    y2 = min(size(firstGray,1), y1 + max(roi(4)-1, 0));
-    accTmpl{k} = firstGray(y1:y2, x1:x2);
-    [accTH(k), accTW(k)] = size(accTmpl{k});
-    accPos0(k,:) = [(x1+x2)/2, (y1+y2)/2];
-    rectangle('Position', [x1 y1 x2-x1+1 y2-y1+1], 'EdgeColor', 'r', 'LineWidth', 1.5);
-    plot(accPos0(k,1), accPos0(k,2), 's', 'Color', 'r', ...
-         'MarkerFaceColor', 'r', 'MarkerSize', 10);
+    roi(3:4) = max(roi(3:4), 5);
+
+    feats = detectMinEigenFeatures(firstGray, 'ROI', roi, 'MinQuality', 0.005);
+    nFound = size(feats.Location, 1);
+    if nFound >= nFeatsAccROI
+        [~, ord]      = sort(feats.Metric, 'descend');
+        accFeats0{k}  = feats.Location(ord(1:nFeatsAccROI), :);
+    elseif nFound > 0
+        accFeats0{k}  = feats.Location;
+        warning('ROI %s: only %d corners found (asked for %d).', ...
+            accelPatternLabels{k}, nFound, nFeatsAccROI);
+    else
+        cx = roi(1) + roi(3)/2;  cy = roi(2) + roi(4)/2;
+        accFeats0{k}  = [cx, cy];
+        warning('ROI %s: no corners found - falling back to ROI center.', ...
+            accelPatternLabels{k});
+    end
+    accPos0(k,:) = mean(accFeats0{k}, 1);
+    rectangle('Position', roi, 'EdgeColor', 'r', 'LineWidth', 1.5);
+    plot(accFeats0{k}(:,1), accFeats0{k}(:,2), '+', 'Color', 'r', ...
+         'MarkerSize', 8, 'LineWidth', 1.5);
 end
+
+% Concatenate all KLT features and remember which rows belong to which ROI
+accFeatIdx   = cell(nPat, 1);
+ptr = 0;
+for k = 1:nPat
+    M = size(accFeats0{k}, 1);
+    accFeatIdx{k} = ptr + (1:M);
+    ptr = ptr + M;
+end
+allAccFeats0 = vertcat(accFeats0{:});
+
 title('Tracking templates placed'); drawnow;
 exportgraphics(gcf, fullfile(outputDir,'01_tracked_points.png'), 'Resolution', 300);
 
@@ -189,6 +214,12 @@ trkY(1, nStructPts+1:end)     = accPos0(:,2).';
 curLinePos   = pts0;
 curAccPos    = accPos0;
 nccFailCount = zeros(nStructPts + nPat, 1);   % per-point low-confidence frame counter
+
+% KLT tracker for accelerometer features (initialized on firstGray so
+% it sees the same CLAHE-processed pixels as the per-frame inputs).
+accTracker = vision.PointTracker('MaxBidirectionalError', 1, ...
+    'NumPyramidLevels', 3, 'BlockSize', [31 31]);
+initialize(accTracker, allAccFeats0, firstGray);
 
 i = 1; hWait = waitbar(0, 'Tracking video...');
 while hasFrame(v)
@@ -227,32 +258,21 @@ while hasFrame(v)
         trkY(i, j) = newY;
     end
 
-    % --- accelerometer rectangles ---
+    % --- accelerometer rectangles (KLT, average of features per ROI) ---
+    [posKLT, validKLT] = accTracker(frGray);
     for k = 1:nPat
-        tmpl = accTmpl{k};
-        tH = accTH(k);  tW = accTW(k);
-        cx = round(curAccPos(k,1));  cy = round(curAccPos(k,2));
-        sr1 = max(1, round(cy - tH/2 - accSearchPad));
-        sr2 = min(size(frGray,1), round(cy + tH/2 + accSearchPad));
-        sc1 = max(1, round(cx - tW/2 - accSearchPad));
-        sc2 = min(size(frGray,2), round(cx + tW/2 + accSearchPad));
-        region = frGray(sr1:sr2, sc1:sc2);
-        if size(region,1) < tH || size(region,2) < tW
-            continue;
-        end
-        C = normxcorr2(tmpl, region);
-        [pr_sub, pc_sub, maxC] = nccPeakSubpixel(C, useSubpixelNCC);
-        if maxC < nccConfidenceMin
+        rows  = accFeatIdx{k};
+        vMask = validKLT(rows);
+        if any(vMask)
+            curAccPos(k,:) = mean(posKLT(rows(vMask), :), 1);
+            trkX(i, nStructPts+k) = curAccPos(k,1);
+            trkY(i, nStructPts+k) = curAccPos(k,2);
+        else
+            % All features lost in this ROI: hold previous position
             trkX(i, nStructPts+k) = trkX(i-1, nStructPts+k);
             trkY(i, nStructPts+k) = trkY(i-1, nStructPts+k);
             nccFailCount(nStructPts+k) = nccFailCount(nStructPts+k) + 1;
-            continue;
         end
-        newY = sr1 + pr_sub - tH + floor(tH/2);
-        newX = sc1 + pc_sub - tW + floor(tW/2);
-        curAccPos(k,:) = [newX, newY];
-        trkX(i, nStructPts+k) = newX;
-        trkY(i, nStructPts+k) = newY;
     end
 
     if mod(i,30) == 0, waitbar(min(i/nFest,1), hWait); end
