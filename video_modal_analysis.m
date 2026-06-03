@@ -150,21 +150,41 @@ fprintf('Structural points: %d total (%s) - joints anchored at every polyline ve
     nStructPts, strjoin(arrayfun(@(x) sprintf('%d',x), linePtCount(:).', 'UniformOutput', false), '+'));
 
 %% ----- DRAW ACCELEROMETER RECTANGLES (KLT corner tracking) -------------
-% Draw a rectangle on each accelerometer. KLT-trackable corner features
-% are detected inside the ROI; the per-ROI signal is the MEAN of the
-% feature positions, so the rectangle does not have to be tight and
-% the user does not need to land on a single corner.
+% Draw the FIRST rectangle freely. Its size [width x height] is then
+% locked in for all subsequent ROIs - you only click the center of
+% each remaining ROI and a same-size rectangle is placed there. This
+% keeps every ROI dimensionally identical so per-ROI feature counts
+% and noise statistics are comparable.
+%
+% KLT-trackable corner features are detected inside each ROI; the
+% per-ROI averaged signal is the MEAN of the feature positions.
+% vision.PointTracker is inherently sub-pixel (gradient-based optical
+% flow) so no further refinement is needed.
 nFeatsAccROI = 10;          % max KLT corners per ROI
 accRect      = zeros(nPat, 4);
 accPos0      = zeros(nPat, 2);     % mean of detected features (one per ROI)
 accFeats0    = cell(nPat, 1);      % features inside each ROI, M_k x 2
 for k = 1:nPat
-    title(sprintf('Draw rectangle %d/%d on %s', k, nPat, accelPatternLabels{k}));
-    hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
-    wait(hR);
-    accRect(k,:) = hR.Position;
+    if k == 1
+        title(sprintf(['Draw rectangle 1/%d on %s   ' ...
+              '(its size will be reused for the remaining ROIs)'], ...
+              nPat, accelPatternLabels{k}));
+        hR = drawrectangle('Color', 'r', 'LineWidth', 1.8);
+        wait(hR);
+        accRect(k,:) = hR.Position;
+        refW = accRect(k,3);  refH = accRect(k,4);
+    else
+        title(sprintf('Click CENTRE of ROI %d/%d on %s   (size locked to %d x %d px)', ...
+              k, nPat, accelPatternLabels{k}, round(refW), round(refH)));
+        [cx, cy] = ginput(1);
+        accRect(k,:) = [cx - refW/2, cy - refH/2, refW, refH];
+    end
     roi = round(accRect(k,:));
     roi(3:4) = max(roi(3:4), 5);
+    roi(1) = max(1, roi(1));
+    roi(2) = max(1, roi(2));
+    roi(3) = min(roi(3), size(firstGray,2) - roi(1));
+    roi(4) = min(roi(4), size(firstGray,1) - roi(2));
 
     feats = detectMinEigenFeatures(firstGray, 'ROI', roi, 'MinQuality', 0.005);
     nFound = size(feats.Location, 1);
@@ -210,6 +230,13 @@ trkX(1, 1:nStructPts)         = pts0(:,1).';
 trkY(1, 1:nStructPts)         = pts0(:,2).';
 trkX(1, nStructPts+1:end)     = accPos0(:,1).';
 trkY(1, nStructPts+1:end)     = accPos0(:,2).';
+
+% Per-KLT-feature position history (one column per individual feature)
+nAccFeats = size(allAccFeats0, 1);
+trkXFeat  = nan(nFest, nAccFeats);
+trkYFeat  = nan(nFest, nAccFeats);
+trkXFeat(1,:) = allAccFeats0(:,1).';
+trkYFeat(1,:) = allAccFeats0(:,2).';
 
 curLinePos   = pts0;
 curAccPos    = accPos0;
@@ -258,8 +285,13 @@ while hasFrame(v)
         trkY(i, j) = newY;
     end
 
-    % --- accelerometer rectangles (KLT, average of features per ROI) ---
+    % --- accelerometer rectangles (KLT, per-feature + averaged) ---
     [posKLT, validKLT] = accTracker(frGray);
+    % Per-feature: invalid -> NaN (will be filled by fillmissing later)
+    xF = posKLT(:,1).';  yF = posKLT(:,2).';
+    xF(~validKLT.') = NaN;  yF(~validKLT.') = NaN;
+    trkXFeat(i,:) = xF;
+    trkYFeat(i,:) = yF;
     for k = 1:nPat
         rows  = accFeatIdx{k};
         vMask = validKLT(rows);
@@ -268,7 +300,6 @@ while hasFrame(v)
             trkX(i, nStructPts+k) = curAccPos(k,1);
             trkY(i, nStructPts+k) = curAccPos(k,2);
         else
-            % All features lost in this ROI: hold previous position
             trkX(i, nStructPts+k) = trkX(i-1, nStructPts+k);
             trkY(i, nStructPts+k) = trkY(i-1, nStructPts+k);
             nccFailCount(nStructPts+k) = nccFailCount(nStructPts+k) + 1;
@@ -279,9 +310,11 @@ while hasFrame(v)
 end
 close(hWait);
 nF   = i;
-trkX = trkX(1:nF, :);
-trkY = trkY(1:nF, :);
-t    = (0:nF-1).' / fs;
+trkX     = trkX(1:nF, :);
+trkY     = trkY(1:nF, :);
+trkXFeat = trkXFeat(1:nF, :);
+trkYFeat = trkYFeat(1:nF, :);
+t        = (0:nF-1).' / fs;
 fprintf('Tracked %d frames (%.2f s)\n', nF, t(end));
 
 % Report low-confidence frame counts per point/ROI (>5% triggers a flag)
@@ -330,6 +363,13 @@ X_struct = X(:, 1:nStructPts);
 Y_struct = Y(:, 1:nStructPts);
 Y_acc    = Y(:, nStructPts+1:end);
 
+% Per-KLT-feature Y displacement (one column per individual feature).
+% Used for the per-ROI mean +/- std statistic on the modal peak: every
+% feature gives one peak-frequency estimate.
+Y_accFeat = trkYFeat - trkYFeat(1, :);
+Y_accFeat = fillmissing(Y_accFeat, 'linear', 1, 'EndValues', 'nearest');
+Y_accFeat = detrend(Y_accFeat, 1);
+
 %% ----- PSD: periodogram on active window, no zero padding ---------------
 % Modal frequency identification uses Y (the dominant direction of the
 % bandpass-magnified mode). The mode shape itself is computed in 2-D.
@@ -340,8 +380,9 @@ df    = fs / nWin;
 fprintf('Analysis window: %.2f-%.2f s (%d samples, df = %.4f Hz)\n', ...
     analysisWindow, nWin, df);
 
-[Pxx,  f] = periodogram(Y_struct(tMask, :), win, nWin, fs);
-[Pacc, ~] = periodogram(Y_acc(tMask, :),    win, nWin, fs);
+[Pxx,      f] = periodogram(Y_struct(tMask, :),  win, nWin, fs);
+[Pacc,     ~] = periodogram(Y_acc(tMask, :),     win, nWin, fs);
+[Pacc_pp,  ~] = periodogram(Y_accFeat(tMask, :), win, nWin, fs);   % per KLT feature
 
 Pline = zeros(numel(f), nLines + nPat);
 for k = 1:nLines
@@ -357,11 +398,39 @@ bandIdx = f >= magBand(1) & f <= magBand(2);
 fb      = f(bandIdx);
 peakHz  = @(P) bandArgMax(P, bandIdx, fb);
 
-peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),  1:nStructPts).';
-peakAccPP    = arrayfun(@(j) peakHz(Pacc(:,j)), 1:nPat).';
-peakAllPts   = [peakStructPP; peakAccPP];
+% One peak per individual measurement: every line point gets one peak,
+% every KLT feature inside an accelerometer ROI gets one peak.
+peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),     1:nStructPts).';
+peakFeatPP   = arrayfun(@(j) peakHz(Pacc_pp(:,j)), 1:nAccFeats).';
+peakAllPts   = [peakStructPP; peakFeatPP];
+
+% Peak of the averaged PSD per group (for the AvgPSDPeakHz column in the
+% summary table). This is the "peak of the mean", separate from the
+% mean of per-point peaks.
 peakPerLine  = arrayfun(@(k) peakHz(Pline(:,k)), 1:(nLines+nPat)).';
 peakGlobal   = peakHz(Pglobal);
+
+% Per-group mean / std of the INDIVIDUAL measurements that belong to
+% that group (line points for portions, KLT features for accel ROIs).
+peakGroupMean = nan(nLines+nPat, 1);
+peakGroupStd  = nan(nLines+nPat, 1);
+peakGroupN    = zeros(nLines+nPat, 1);
+for k = 1:nLines
+    fp = peakStructPP(lineIdx{k});
+    peakGroupMean(k) = mean(fp, 'omitnan');
+    peakGroupStd(k)  = std(fp,  0, 'omitnan');
+    peakGroupN(k)    = numel(fp);
+end
+for k = 1:nPat
+    fp = peakFeatPP(accFeatIdx{k});
+    peakGroupMean(nLines+k) = mean(fp, 'omitnan');
+    peakGroupStd(nLines+k)  = std(fp,  0, 'omitnan');
+    peakGroupN(nLines+k)    = numel(fp);
+end
+
+% Backwards-compat alias used by Plot 7 (one number per accelerometer ROI
+% from the averaged-signal PSD - still useful as a reference dot).
+peakAccPP = arrayfun(@(j) peakHz(Pacc(:,j)), 1:nPat).';
 
 muPeak = mean(peakAllPts);
 sdPeak = std(peakAllPts);
@@ -527,21 +596,36 @@ end
 THtbl = array2table([t, Y_struct, Y_acc], 'VariableNames', ['time_s' cellstr(colNames)]);
 writetable(THtbl, fullfile(outputDir,'time_histories_Y_px.csv'));
 
+% Per-measurement peak: one row per line point and one row per KLT
+% feature (NOT one per accelerometer ROI). Numel matches peakAllPts.
 ppGroup = strings(numel(peakAllPts), 1);
 for k = 1:nLines
     ppGroup(lineIdx{k}) = string(lineLabels{k});
 end
 for k = 1:nPat
-    ppGroup(nStructPts + k) = string(accelPatternLabels{k});
+    ppGroup(nStructPts + accFeatIdx{k}) = string(accelPatternLabels{k});
 end
 writetable(table(ppGroup, peakAllPts, 'VariableNames', {'Group','PeakHz'}), ...
     fullfile(outputDir,'per_point_peaks.csv'));
 
-peakSummary = table(groupLabels(:), peakPerLine, 'VariableNames', {'Group','AvgPSDPeakHz'});
-peakSummary = [peakSummary; table("OVERALL_POOLED", muPeak, ...
-    'VariableNames', {'Group','AvgPSDPeakHz'})];
-peakSummary.Mean_pm_Std = strings(height(peakSummary), 1);
-peakSummary.Mean_pm_Std(end) = sprintf('%.4f +/- %.4f Hz (n=%d)', muPeak, sdPeak, numel(peakAllPts));
+% Summary: per-group Mean_pm_Std comes from the INDIVIDUAL measurements
+% in that group (line points for portions, KLT features for accel ROIs).
+% AvgPSDPeakHz is the peak of the per-group averaged PSD ("peak of mean")
+% which is a different estimator and listed alongside for cross-check.
+nGroupRows = nLines + nPat;
+ms = strings(nGroupRows + 1, 1);
+nv = zeros(nGroupRows + 1, 1);
+for kk = 1:nGroupRows
+    ms(kk) = sprintf('%.4f +/- %.4f Hz', peakGroupMean(kk), peakGroupStd(kk));
+    nv(kk) = peakGroupN(kk);
+end
+ms(end) = sprintf('%.4f +/- %.4f Hz', muPeak, sdPeak);
+nv(end) = numel(peakAllPts);
+
+peakSummary = table([groupLabels(:); "OVERALL_POOLED"], ...
+                    [peakPerLine;       muPeak], ...
+                    nv, ms, ...
+                    'VariableNames', {'Group','AvgPSDPeakHz','nMeasurements','Mean_pm_Std'});
 writetable(peakSummary, fullfile(outputDir,'peak_summary.csv'));
 
 writetable(table(pairNames(:), bestLag, bestPhase, ...
@@ -642,7 +726,8 @@ for k = 1:nLines
     if isempty(hSc), hSc = hh; end
 end
 for k = 1:nPat
-    scatter(ax, (nLines+k), peakAccPP(k), 50, [0.30 0.45 0.75], 'filled', ...
+    fp = peakFeatPP(accFeatIdx{k});       % one peak per KLT feature
+    scatter(ax, (nLines+k)*ones(numel(fp),1), fp, 50, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
 end
