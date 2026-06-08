@@ -804,26 +804,24 @@ legend(ax,'Location','northeastoutside');
 saveHQ(fig, '06_time_xcorr');
 
 %% ----- Plot: 2-D MODE SHAPE OVERLAY on the first frame -----------------
-% Three things per portion are drawn on the first frame:
-%   1. drawn line   - yellow dashed - endpoints of the user-drawn line
-%   2. ref          - solid colored, thin - through tracked initial points
-%   3. def (xVis)   - solid colored, thick + square markers - through the
-%                     deflected positions at the moment of maximum collective
-%                     displacement (visually magnified)
-% Thin colored "drift" segments connect each ref point to its def position
-% so the displacement vector of every point is visible.
+% Envelope style: for each portion both extremes of the modal cycle are
+% drawn (positive snapshot at phi* and negative snapshot at phi*+pi),
+% joined at the polyline endpoints to close the envelope, with a light
+% portion-colour fill between them.
+%   Filled markers  = positive half-cycle (Re(U exp(-i phi*)))
+%   Unfilled markers= negative half-cycle (-1 * above)
+% The thin white dashed centerline is the user-drawn reference polyline
+% so the envelope can be read as "structure swings between these two
+% colored lines around the dashed centerline".
 fig = figure('Name','Mode shape overlay','Color','w','Position',[60 60 1500 900]);
 ax  = axes(fig);
 imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
 
-% Per-portion colors. First portion uses red as the deflected line; the
-% rest cycle through other saturated colors so multi-portion analyses
-% remain distinguishable. The reference polyline is white (with a thin
-% black halo for readability over light pixels).
-portionColors = {[0.85 0.10 0.10], ... % red
-                 [0.10 0.40 0.85], ... % blue
-                 [0.10 0.60 0.20], ... % dark green
-                 [0.60 0.20 0.70]};    % purple
+% Per-portion colors. Matches the user's example envelope figure.
+portionColors = {[0.20 0.50 1.00], ... % blue
+                 [0.20 0.80 0.20], ... % green
+                 [1.00 0.55 0.10], ... % orange
+                 [0.85 0.10 0.10]};    % red
 hLegEntries = gobjects(0);
 legNames    = strings(0);
 
@@ -832,54 +830,77 @@ for k = 1:nLines
     cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
     jointMask = isJoint(idx);
 
-    % 1. Drift segments (bottom layer) - per-point displacement vectors
-    for j = idx
-        plot(ax, [xRef(j) xDef(j)], [yRef(j) yDef(j)], '-', ...
-            'Color', [cl 0.55], 'LineWidth', 1.0, 'HandleVisibility','off');
-    end
+    % Pixel deflections at this portion
+    xRefK = xRef(idx);  yRefK = yRef(idx);
+    dxK   = dx(idx);    dyK   = dy(idx);
 
-    % 2. Reference polyline = drawn shape (thin black halo + white dashed)
+    % Positive (+phi*) and negative (-phi*) envelope positions
+    xPos = xRefK + visMag * dxK;
+    yPos = yRefK + visMag * dyK;
+    xNeg = xRefK - visMag * dxK;
+    yNeg = yRefK - visMag * dyK;
+
+    % 1. Filled envelope polygon (positive forward, negative reversed)
+    xPoly = [xPos; flipud(xNeg)];
+    yPoly = [yPos; flipud(yNeg)];
+    patch(ax, xPoly, yPoly, cl, 'FaceAlpha', 0.18, 'EdgeColor', 'none', ...
+        'HandleVisibility', 'off');
+
+    % 2. Reference (drawn) centerline - thin white dashed with black halo
     plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '-', ...
-        'Color', 'k', 'LineWidth', 4.0, 'HandleVisibility','off');
+        'Color', 'k', 'LineWidth', 2.8, 'HandleVisibility', 'off');
     hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '--', ...
-        'Color', 'w', 'LineWidth', 2.4);
+        'Color', 'w', 'LineWidth', 1.6);
 
-    % 3. Reference sample-point markers (gray circles outlined in black)
-    %    Joints (polyline vertices) drawn as larger WHITE circles to
-    %    match the white dashed reference line.
-    plot(ax, xRef(idx(~jointMask)), yRef(idx(~jointMask)), 'o', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', [0.5 0.5 0.5], ...
-        'MarkerSize', 7, 'LineWidth', 0.8, 'HandleVisibility','off');
-    plot(ax, xRef(idx(jointMask)), yRef(idx(jointMask)), 'o', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', 'w', ...
-        'MarkerSize', 12, 'LineWidth', 1.0, 'HandleVisibility','off');
+    % 3. Envelope polylines (black halo + portion color) - same color as
+    %    the requested style and connected at the endpoints.
+    plot(ax, xPos, yPos, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
+    hPos = plot(ax, xPos, yPos, '-', 'Color', cl, 'LineWidth', 2.6);
+    plot(ax, xNeg, yNeg, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
+    plot(ax, xNeg, yNeg, '-', 'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
 
-    % 4. Deflected polyline (black halo + saturated color on top)
-    %    Joints drawn as larger circles in the portion (line) color.
-    plot(ax, xDef(idx), yDef(idx), '-', ...
-        'Color', 'k', 'LineWidth', 5.0, 'HandleVisibility','off');
-    hDe = plot(ax, xDef(idx), yDef(idx), '-', 'Color', cl, 'LineWidth', 3.2);
-    plot(ax, xDef(idx(~jointMask)), yDef(idx(~jointMask)), 's', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', cl, 'MarkerSize', 9, ...
-        'LineWidth', 0.8, 'HandleVisibility','off');
-    hJ = plot(ax, xDef(idx(jointMask)), yDef(idx(jointMask)), 'o', ...
-        'MarkerEdgeColor', 'k', 'MarkerFaceColor', cl, ...
-        'MarkerSize', 13, 'LineWidth', 1.0);
+    % 4. Closing segments at start / end (link positive and negative)
+    plot(ax, [xPos(1) xNeg(1)],   [yPos(1) yNeg(1)],   '-', ...
+        'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
+    plot(ax, [xPos(end) xNeg(end)], [yPos(end) yNeg(end)], '-', ...
+        'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
 
-    hLegEntries = [hLegEntries, hDr, hDe];
+    % 5. Markers per node
+    %    Positive half cycle: filled circles, portion color, black edge
+    %    Negative half cycle: open circles, portion color edge, white fill
+    plot(ax, xPos(~jointMask), yPos(~jointMask), 'o', ...
+        'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
+        'MarkerSize', 6, 'LineWidth', 0.7, 'HandleVisibility','off');
+    plot(ax, xNeg(~jointMask), yNeg(~jointMask), 'o', ...
+        'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
+        'MarkerSize', 6, 'LineWidth', 1.4, 'HandleVisibility','off');
+
+    %    Joints rendered slightly larger so polyline vertices stand out
+    plot(ax, xPos(jointMask), yPos(jointMask), 'o', ...
+        'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
+        'MarkerSize', 10, 'LineWidth', 0.9, 'HandleVisibility','off');
+    plot(ax, xNeg(jointMask), yNeg(jointMask), 'o', ...
+        'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
+        'MarkerSize', 10, 'LineWidth', 1.6, 'HandleVisibility','off');
+
+    hLegEntries = [hLegEntries, hPos];
     legNames    = [legNames, ...
-        string(lineLabels{k}) + " --- reference (drawn)", ...
-        string(lineLabels{k}) + sprintf(" --- deflected (x%d)", visMag)];
-    if any(jointMask) && k == 1
-        hLegEntries = [hLegEntries, hJ];
-        legNames    = [legNames, "joint (polyline vertex)"];
-    end
+        string(lineLabels{k}) + sprintf(" envelope (x%d)", visMag)];
 end
 
-ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (x%d visual)', peakGlobal, visMag), ...
+% Global legend entries for the positive / negative half-cycle markers
+hPosMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', [0.4 0.4 0.4], ...
+    'MarkerEdgeColor', 'k', 'MarkerSize', 7, 'LineWidth', 0.8);
+hNegMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', 'w', ...
+    'MarkerEdgeColor', [0.4 0.4 0.4], 'MarkerSize', 7, 'LineWidth', 1.4);
+hLegEntries = [hLegEntries, hDr, hPosMk, hNegMk];
+legNames    = [legNames, "reference (drawn)", ...
+    "filled marker = +half cycle", "open marker = -half cycle"];
+
+ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (envelope x%d)', peakGlobal, visMag), ...
     'Color', 'k', 'FontSize', 13, 'FontWeight','bold');
 lg = legend(hLegEntries, legNames, 'Location','northoutside', ...
-    'Orientation','horizontal', 'NumColumns', nLines, ...
+    'Orientation','horizontal', 'NumColumns', max(nLines, 3), ...
     'TextColor','k', 'Color','w', 'EdgeColor',[0.3 0.3 0.3], 'FontSize', 10);
 saveHQ(fig, '07_mode_shape_overlay');
 
