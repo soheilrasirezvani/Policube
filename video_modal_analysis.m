@@ -384,15 +384,6 @@ fprintf('Analysis window: %.2f-%.2f s (%d samples, df = %.4f Hz)\n', ...
 [Pacc,     ~] = periodogram(Y_acc(tMask, :),     win, nWin, fs);
 [Pacc_pp,  ~] = periodogram(Y_accFeat(tMask, :), win, nWin, fs);   % per KLT feature
 
-Pline = zeros(numel(f), nLines + nPat);
-for k = 1:nLines
-    Pline(:, k) = mean(Pxx(:, lineIdx{k}), 2);
-end
-for k = 1:nPat
-    Pline(:, nLines+k) = Pacc(:, k);
-end
-Pglobal = mean(Pline(:, 1:nLines), 2);
-
 %% ----- BIN-SNAP PEAK DETECTION inside magBand ---------------------------
 bandIdx = f >= magBand(1) & f <= magBand(2);
 fb      = f(bandIdx);
@@ -404,44 +395,109 @@ peakStructPP = arrayfun(@(j) peakHz(Pxx(:,j)),     1:nStructPts).';
 peakFeatPP   = arrayfun(@(j) peakHz(Pacc_pp(:,j)), 1:nAccFeats).';
 peakAllPts   = [peakStructPP; peakFeatPP];
 
-% Peak of the averaged PSD per group (for the AvgPSDPeakHz column in the
-% summary table). This is the "peak of the mean", separate from the
-% mean of per-point peaks.
+%% ----- OUTLIER REJECTION on per-point peak frequencies ------------------
+% Within each group (line portion / accel ROI), points whose peak
+% frequency is more than outlierTolSigma * std away from the group mean
+% are flagged as outliers. They are EXCLUDED from frequency statistics
+% (per-group mean +/- std, pooled mean +/- std, averaged group PSDs)
+% but kept for the mode-shape extraction further down the script.
+outlierTolSigma = 2;     % 2-sigma rule
+isOutlier       = false(numel(peakAllPts), 1);
+
+% Line portions
+for k = 1:nLines
+    rows = lineIdx{k};
+    fp   = peakStructPP(rows);
+    mu   = mean(fp, 'omitnan');
+    sd   = std(fp,  0, 'omitnan');
+    if sd > 0 && ~isnan(sd)
+        isOutlier(rows) = abs(fp - mu) > outlierTolSigma * sd;
+    end
+end
+% Accelerometer ROIs (KLT features)
+for k = 1:nPat
+    rows  = accFeatIdx{k};
+    gRows = nStructPts + rows;
+    fp    = peakFeatPP(rows);
+    mu    = mean(fp, 'omitnan');
+    sd    = std(fp,  0, 'omitnan');
+    if sd > 0 && ~isnan(sd)
+        isOutlier(gRows) = abs(fp - mu) > outlierTolSigma * sd;
+    end
+end
+isInlier = ~isOutlier;
+
+nOutTot = sum(isOutlier);
+fprintf('\nOutlier rejection (%.1f-sigma rule): %d of %d measurements excluded (%.1f%%)\n', ...
+    outlierTolSigma, nOutTot, numel(peakAllPts), 100*nOutTot/numel(peakAllPts));
+
+%% ----- AVERAGED PSDs (inliers only) ------------------------------------
+% Per-line average PSD: line portions use inlier line-point PSDs; accel
+% ROIs use the mean of inlier per-KLT-feature PSDs (NOT the averaged-
+% signal PSD used previously). If a group has zero inliers the fallback
+% is to use every point in that group so the row never goes blank.
+Pline = zeros(numel(f), nLines + nPat);
+for k = 1:nLines
+    rows    = lineIdx{k};
+    inRows  = rows(isInlier(rows));
+    if isempty(inRows), inRows = rows; end
+    Pline(:, k) = mean(Pxx(:, inRows), 2);
+end
+for k = 1:nPat
+    rows    = accFeatIdx{k};
+    gRows   = nStructPts + rows;
+    inMask  = isInlier(gRows);
+    inRows  = rows(inMask);
+    if isempty(inRows), inRows = rows; end
+    Pline(:, nLines+k) = mean(Pacc_pp(:, inRows), 2);
+end
+Pglobal = mean(Pline(:, 1:nLines), 2);
+
+% Peak of the averaged PSD per group (for the AvgPSDPeakHz column).
 peakPerLine  = arrayfun(@(k) peakHz(Pline(:,k)), 1:(nLines+nPat)).';
 peakGlobal   = peakHz(Pglobal);
 
-% Per-group mean / std of the INDIVIDUAL measurements that belong to
-% that group (line points for portions, KLT features for accel ROIs).
+% Per-group mean / std of the INLIER individual measurements.
 peakGroupMean = nan(nLines+nPat, 1);
 peakGroupStd  = nan(nLines+nPat, 1);
 peakGroupN    = zeros(nLines+nPat, 1);
+peakGroupNOut = zeros(nLines+nPat, 1);
 for k = 1:nLines
-    fp = peakStructPP(lineIdx{k});
+    rows   = lineIdx{k};
+    inMask = isInlier(rows);
+    fp     = peakStructPP(rows(inMask));
     peakGroupMean(k) = mean(fp, 'omitnan');
     peakGroupStd(k)  = std(fp,  0, 'omitnan');
     peakGroupN(k)    = numel(fp);
+    peakGroupNOut(k) = sum(~inMask);
 end
 for k = 1:nPat
-    fp = peakFeatPP(accFeatIdx{k});
+    rows   = accFeatIdx{k};
+    gRows  = nStructPts + rows;
+    inMask = isInlier(gRows);
+    fp     = peakFeatPP(rows(inMask));
     peakGroupMean(nLines+k) = mean(fp, 'omitnan');
     peakGroupStd(nLines+k)  = std(fp,  0, 'omitnan');
     peakGroupN(nLines+k)    = numel(fp);
+    peakGroupNOut(nLines+k) = sum(~inMask);
 end
 
 % Backwards-compat alias used by Plot 7 (one number per accelerometer ROI
 % from the averaged-signal PSD - still useful as a reference dot).
 peakAccPP = arrayfun(@(j) peakHz(Pacc(:,j)), 1:nPat).';
 
-muPeak = mean(peakAllPts);
-sdPeak = std(peakAllPts);
+peakAllPtsInl = peakAllPts(isInlier);
+muPeak = mean(peakAllPtsInl, 'omitnan');
+sdPeak = std(peakAllPtsInl,  0, 'omitnan');
+nInlier = numel(peakAllPtsInl);
 errPct = 100 * abs(peakGlobal - accelTargetHz) / accelTargetHz;
 
 fprintf('\n===== PEAK SUMMARY =====\n');
 fprintf('  df (resolution)         : %.4f Hz  (+/- %.4f Hz uncertainty floor)\n', df, df/2);
 fprintf('  Global peak (avg PSD)   : %.4f Hz  (vs accel %.2f Hz: %.2f%% error)\n', ...
     peakGlobal, accelTargetHz, errPct);
-fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d)\n', ...
-    muPeak, sdPeak, numel(peakAllPts));
+fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d inliers / %d total)\n', ...
+    muPeak, sdPeak, nInlier, numel(peakAllPts));
 
 %% ----- ROI SIGNAL QUALITY (out-of-band SNR) -----------------------------
 outBandIdx = ((f >= spectraXLim(1)) & (f <  magBand(1))) | ...
@@ -614,27 +670,32 @@ end
 for k = 1:nPat
     ppGroup(nStructPts + accFeatIdx{k}) = string(accelPatternLabels{k});
 end
-writetable(table(ppGroup, peakAllPts, 'VariableNames', {'Group','PeakHz'}), ...
+writetable(table(ppGroup, peakAllPts, isOutlier, ...
+    'VariableNames', {'Group','PeakHz','IsOutlier'}), ...
     fullfile(outputDir,'per_point_peaks.csv'));
 
-% Summary: per-group Mean_pm_Std comes from the INDIVIDUAL measurements
-% in that group (line points for portions, KLT features for accel ROIs).
-% AvgPSDPeakHz is the peak of the per-group averaged PSD ("peak of mean")
-% which is a different estimator and listed alongside for cross-check.
+% Summary: per-group Mean_pm_Std comes from the INLIER individual
+% measurements in that group; per-group nInliers and nOutliers are
+% reported alongside so the reader can see how many points were
+% excluded by the 2-sigma rule.
+% AvgPSDPeakHz is the peak of the inlier-averaged PSD ("peak of mean").
 nGroupRows = nLines + nPat;
-ms = strings(nGroupRows + 1, 1);
-nv = zeros(nGroupRows + 1, 1);
+ms     = strings(nGroupRows + 1, 1);
+nIn    = zeros(nGroupRows + 1, 1);
+nOut   = zeros(nGroupRows + 1, 1);
 for kk = 1:nGroupRows
-    ms(kk) = sprintf('%.4f +/- %.4f Hz', peakGroupMean(kk), peakGroupStd(kk));
-    nv(kk) = peakGroupN(kk);
+    ms(kk)   = sprintf('%.4f +/- %.4f Hz', peakGroupMean(kk), peakGroupStd(kk));
+    nIn(kk)  = peakGroupN(kk);
+    nOut(kk) = peakGroupNOut(kk);
 end
-ms(end) = sprintf('%.4f +/- %.4f Hz', muPeak, sdPeak);
-nv(end) = numel(peakAllPts);
+ms(end)   = sprintf('%.4f +/- %.4f Hz', muPeak, sdPeak);
+nIn(end)  = nInlier;
+nOut(end) = nOutTot;
 
 peakSummary = table([groupLabels(:); "OVERALL_POOLED"], ...
                     [peakPerLine;       muPeak], ...
-                    nv, ms, ...
-                    'VariableNames', {'Group','AvgPSDPeakHz','nMeasurements','Mean_pm_Std'});
+                    nIn, nOut, ms, ...
+                    'VariableNames', {'Group','AvgPSDPeakHz','nInliers','nOutliers','Mean_pm_Std'});
 writetable(peakSummary, fullfile(outputDir,'peak_summary.csv'));
 
 writetable(table(pairNames(:), bestLag, bestPhase, ...
@@ -723,25 +784,47 @@ for k = 1:(nLines + nPat)
 end
 
 %% ----- Plot: overall pooled peak ----------------------------------------
+% Inlier measurements rendered as filled blue dots, outliers as red
+% crosses, so the 2-sigma exclusion is visible. Stats overlay (band +
+% mean line) is computed from inliers only.
 fig = figure('Name','Overall pooled peak','Color','w','Position',[80 80 1100 600]);
 ax  = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc  = 1:(nLines+nPat);
-hSc = [];
+hIn = []; hOut = [];
 for k = 1:nLines
-    fp = peakStructPP(lineIdx{k});
-    hh = scatter(ax, k*ones(numel(fp),1), fp, 50, [0.30 0.45 0.75], 'filled', ...
+    rows   = lineIdx{k};
+    fp     = peakStructPP(rows);
+    inMask = isInlier(rows);
+    hi = scatter(ax, k*ones(sum(inMask),1), fp(inMask), 50, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
-    if isempty(hSc), hSc = hh; end
+    if any(~inMask)
+        ho = scatter(ax, k*ones(sum(~inMask),1), fp(~inMask), 70, [0.85 0.15 0.15], 'x', ...
+            'LineWidth', 1.8, 'HandleVisibility','off');
+        if isempty(hOut), hOut = ho; end
+    end
+    if isempty(hIn), hIn = hi; end
 end
 for k = 1:nPat
-    fp = peakFeatPP(accFeatIdx{k});       % one peak per KLT feature
-    scatter(ax, (nLines+k)*ones(numel(fp),1), fp, 50, [0.30 0.45 0.75], 'filled', ...
+    rows   = accFeatIdx{k};
+    gRows  = nStructPts + rows;
+    fp     = peakFeatPP(rows);
+    inMask = isInlier(gRows);
+    scatter(ax, (nLines+k)*ones(sum(inMask),1), fp(inMask), 50, [0.30 0.45 0.75], 'filled', ...
         'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
         'HandleVisibility','off');
+    if any(~inMask)
+        ho = scatter(ax, (nLines+k)*ones(sum(~inMask),1), fp(~inMask), 70, [0.85 0.15 0.15], 'x', ...
+            'LineWidth', 1.8, 'HandleVisibility','off');
+        if isempty(hOut), hOut = ho; end
+    end
 end
-hSc.HandleVisibility = 'on';
-hSc.DisplayName = sprintf('Individual point peaks (n = %d)', numel(peakAllPts));
+hIn.HandleVisibility = 'on';
+hIn.DisplayName = sprintf('Inlier peaks (n = %d)', nInlier);
+if ~isempty(hOut)
+    hOut.HandleVisibility = 'on';
+    hOut.DisplayName = sprintf('Outliers (>%.0f\\sigma, n = %d)', outlierTolSigma, nOutTot);
+end
 
 xR = [0.5, nLines+nPat+0.5];
 fill(ax, [xR fliplr(xR)], [muPeak-sdPeak muPeak-sdPeak muPeak+sdPeak muPeak+sdPeak], ...
@@ -757,9 +840,9 @@ ylim(ax, [min([peakAllPts; accelTargetHz])-0.1*df-0.05, ...
 xlim(ax, xR);
 set(ax, 'XTick', xc, 'XTickLabel', groupLabels);
 xlabel(ax,'Tracking group');  ylabel(ax,'Peak frequency [Hz]');
-title(ax, sprintf('OVERALL: %.4f \\pm %.4f Hz   (n=%d)   error vs accel: %.2f%%', ...
-    muPeak, sdPeak, numel(peakAllPts), 100*abs(muPeak-accelTargetHz)/accelTargetHz), ...
-    'FontWeight','bold');
+title(ax, sprintf('OVERALL: %.4f \\pm %.4f Hz   (%d inliers / %d total, %.0f\\sigma rule)   error vs accel: %.2f%%', ...
+    muPeak, sdPeak, nInlier, numel(peakAllPts), outlierTolSigma, ...
+    100*abs(muPeak-accelTargetHz)/accelTargetHz), 'FontWeight','bold');
 legend(ax,'Location','southoutside','Orientation','horizontal');
 saveHQ(fig, '04_overall_pooled_peak');
 
@@ -927,8 +1010,8 @@ end
 fprintf('\n===== SAVED TO: %s =====\n', outputDir);
 fprintf('Headline result for the paper:\n');
 fprintf('  Video natural frequency  : %.4f Hz  (peak of cross-portion avg PSD)\n', peakGlobal);
-fprintf('  Pooled per-point average : %.4f +/- %.4f Hz   (n=%d, df=%.3f Hz)\n', ...
-    muPeak, sdPeak, numel(peakAllPts), df);
+fprintf('  Pooled per-point average : %.4f +/- %.4f Hz   (n=%d inliers / %d total, df=%.3f Hz)\n', ...
+    muPeak, sdPeak, nInlier, numel(peakAllPts), df);
 fprintf('  Accelerometer reference  : %.2f Hz  (error %.2f%%)\n', accelTargetHz, errPct);
 fprintf('  Mode shape rendered at   : %.3f Hz   (max deflection %.3f px, visual x%d)\n', ...
     peakGlobal, maxDef, visMag);
