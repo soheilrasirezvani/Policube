@@ -47,7 +47,7 @@ nLines = numel(lineLabels);
 nPat   = numel(accelPatternLabels);
 N      = nPointsPerLine;
 
-figure('Name','Setup', 'Color', 'w','NumberTitle','off');
+figSetup = figure('Name','Setup', 'Color', 'w','NumberTitle','off');
 imshow(firstFrame); hold on;
 
 lineVerts = cell(nLines, 1);   % each cell: Mk x 2 array of polyline vertices
@@ -164,6 +164,7 @@ nFeatsAccROI = 10;          % max KLT corners per ROI
 accRect      = zeros(nPat, 4);
 accPos0      = zeros(nPat, 2);     % mean of detected features (one per ROI)
 accFeats0    = cell(nPat, 1);      % features inside each ROI, M_k x 2
+hFeatMarkers = cell(nPat, 1);      % handles to marker plots (so we can refresh after pruning)
 for k = 1:nPat
     if k == 1
         title(sprintf(['Draw rectangle 1/%d on %s   ' ...
@@ -203,11 +204,99 @@ for k = 1:nPat
     end
     accPos0(k,:) = mean(accFeats0{k}, 1);
     rectangle('Position', roi, 'EdgeColor', 'r', 'LineWidth', 1.5);
-    plot(accFeats0{k}(:,1), accFeats0{k}(:,2), '+', 'Color', 'r', ...
-         'MarkerSize', 8, 'LineWidth', 1.5);
+    hFeatMarkers{k} = plot(accFeats0{k}(:,1), accFeats0{k}(:,2), '+', ...
+        'Color', 'r', 'MarkerSize', 8, 'LineWidth', 1.5);
 end
 
-% Concatenate all KLT features and remember which rows belong to which ROI
+%% ----- OPTIONAL: MANUAL PRUNING of KLT features inside each ROI --------
+% Per-ROI zoomed view with all detected features as numbered circles.
+% Click any feature to TOGGLE keep / remove. Press ENTER when done with
+% a ROI to move on to the next. Features that land on background, wires,
+% pedestrians, etc. can be discarded so the kept set sits as close to
+% the physical accelerometer as possible.
+% Set pruneFeatures = false to skip this step entirely.
+pruneFeatures = true;
+prunePadPx    = 30;     % padding around each ROI in the zoom view
+if pruneFeatures
+    for k = 1:nPat
+        roiK = round(accRect(k,:));
+        x1z = max(1, roiK(1) - prunePadPx);
+        y1z = max(1, roiK(2) - prunePadPx);
+        x2z = min(size(firstGray,2), roiK(1) + roiK(3) + prunePadPx);
+        y2z = min(size(firstGray,1), roiK(2) + roiK(4) + prunePadPx);
+
+        figP = figure('Name', sprintf('Prune %s', accelPatternLabels{k}), ...
+            'Color', 'w', 'NumberTitle', 'off', 'Position', [120 120 900 700]);
+        imshow(firstFrame(y1z:y2z, x1z:x2z, :));
+        hold on;
+        rectangle('Position', [roiK(1)-x1z+1, roiK(2)-y1z+1, roiK(3), roiK(4)], ...
+            'EdgeColor', 'r', 'LineWidth', 1.5);
+
+        feats  = accFeats0{k};
+        nFK    = size(feats, 1);
+        fXY    = feats - [x1z-1, y1z-1];   % shift to zoom coordinates
+        keep   = true(nFK, 1);
+        hM     = gobjects(nFK, 1);
+        hT     = gobjects(nFK, 1);
+        for j = 1:nFK
+            hM(j) = plot(fXY(j,1), fXY(j,2), 'o', 'MarkerSize', 14, ...
+                'MarkerEdgeColor', [0.85 0.10 0.10], ...
+                'MarkerFaceColor', [0.85 0.10 0.10], 'LineWidth', 2.2);
+            hT(j) = text(fXY(j,1)+10, fXY(j,2)-6, sprintf('%d', j), ...
+                'Color', [0.85 0.10 0.10], 'FontSize', 11, 'FontWeight', 'bold');
+        end
+        title(sprintf(['Prune %s   (%d features)   ' ...
+                       'Click a feature to toggle keep/remove   ' ...
+                       'Press ENTER when done'], ...
+                      accelPatternLabels{k}, nFK));
+
+        while true
+            [cx, cy] = ginput(1);
+            if isempty(cx) || ~isvalid(figP), break; end
+            d = hypot(fXY(:,1) - cx, fXY(:,2) - cy);
+            [dmin, jmin] = min(d);
+            if dmin > 25, continue; end   % click too far from any feature
+            keep(jmin) = ~keep(jmin);
+            if keep(jmin)
+                set(hM(jmin), 'MarkerEdgeColor', [0.85 0.10 0.10], ...
+                    'MarkerFaceColor', [0.85 0.10 0.10], 'LineWidth', 2.2);
+                set(hT(jmin), 'Color', [0.85 0.10 0.10]);
+            else
+                set(hM(jmin), 'MarkerEdgeColor', [0.5 0.5 0.5], ...
+                    'MarkerFaceColor', 'none', 'LineWidth', 1.2);
+                set(hT(jmin), 'Color', [0.5 0.5 0.5]);
+            end
+            drawnow;
+        end
+
+        nRemoved = sum(~keep);
+        if nRemoved > 0
+            fprintf('ROI %s: kept %d / removed %d features\n', ...
+                accelPatternLabels{k}, sum(keep), nRemoved);
+        end
+        accFeats0{k} = feats(keep, :);
+        if isempty(accFeats0{k})
+            % Safety: cannot leave a ROI with zero features. Use ROI center.
+            cx = roiK(1) + roiK(3)/2;  cy = roiK(2) + roiK(4)/2;
+            accFeats0{k} = [cx, cy];
+            warning('ROI %s: all features removed, falling back to ROI center.', ...
+                accelPatternLabels{k});
+        end
+        accPos0(k,:) = mean(accFeats0{k}, 1);
+        if isvalid(figP), close(figP); end
+    end
+
+    % Refresh markers on the main setup figure so the saved 01 PNG shows
+    % only the features that will actually be tracked.
+    figure(figSetup);
+    for k = 1:nPat
+        if isgraphics(hFeatMarkers{k}), delete(hFeatMarkers{k}); end
+        hFeatMarkers{k} = plot(accFeats0{k}(:,1), accFeats0{k}(:,2), '+', ...
+            'Color', 'r', 'MarkerSize', 8, 'LineWidth', 1.5);
+    end
+end
+
+% Concatenate all kept KLT features and remember which rows belong to which ROI
 accFeatIdx   = cell(nPat, 1);
 ptr = 0;
 for k = 1:nPat
