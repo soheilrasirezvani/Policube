@@ -135,9 +135,6 @@ for k = 1:nLines
 
     plot(verts(:,1), verts(:,2), '-', 'Color', 'w', 'LineWidth', 1.5);
     plot(xs, ys, 'o', 'Color', 'w', 'MarkerFaceColor', 'w');
-    % Make joints visually distinct on the setup figure (larger diamond)
-    plot(xs(isJoint(idx)), ys(isJoint(idx)), 'd', ...
-        'Color', 'y', 'MarkerFaceColor', 'y', 'MarkerSize', 10);
 
     for j = idx
         cx = round(pts0(j,1));  cy = round(pts0(j,2));
@@ -306,7 +303,66 @@ for k = 1:nPat
 end
 allAccFeats0 = vertcat(accFeats0{:});
 
-title('Tracking templates placed'); drawnow;
+%% ----- Publication-ready labels on the setup figure -------------------
+% Place a callout near each tracked line (Lower / Upper staircase set)
+% and each accelerometer ROI ("Accelerometer N"). Styled for MSSP:
+% Helvetica, white box with a thin black border, bold black text.
+figure(figSetup);
+labelFont      = 'Helvetica';
+labelFontSize  = 14;
+labelOffsetPx  = 35;      % distance of the line label above the line midpoint
+roiLabelGapPx  = 12;      % distance of the accel label from the ROI rectangle
+
+% --- Line labels (arc-length midpoint of each polyline, placed above) ---
+for k = 1:nLines
+    verts  = lineVerts{k};
+    segLen = hypot(diff(verts(:,1)), diff(verts(:,2)));
+    cumL   = [0; cumsum(segLen)];
+    if cumL(end) > 0
+        midX = interp1(cumL, verts(:,1), cumL(end)/2);
+        midY = interp1(cumL, verts(:,2), cumL(end)/2);
+    else
+        midX = verts(1,1);
+        midY = verts(1,2);
+    end
+    text(midX, midY - labelOffsetPx, string(lineLabels{k}), ...
+        'FontName', labelFont, 'FontSize', labelFontSize, 'FontWeight', 'bold', ...
+        'Color', 'k', 'BackgroundColor', 'w', 'EdgeColor', 'k', ...
+        'Margin', 4, 'HorizontalAlignment', 'center', ...
+        'VerticalAlignment', 'bottom', 'Clipping', 'off');
+end
+
+% --- Accelerometer labels ("Accelerometer N") next to each ROI ----------
+% Label is placed to the side of the ROI that has the most room, so it
+% never falls off the image. "Accelerometer N" uses the 1-based ROI
+% index (independent of the short accelPatternLabels used elsewhere).
+imgW = size(firstFrame, 2);
+imgH = size(firstFrame, 1);
+for k = 1:nPat
+    roiK = round(accRect(k,:));
+    x1z = roiK(1);  y1z = roiK(2);
+    x2z = roiK(1) + roiK(3);  y2z = roiK(2) + roiK(4);
+    cyC = (y1z + y2z) / 2;
+    % Prefer right of the ROI; flip to left if not enough room
+    if (imgW - x2z) > 250 || (imgW - x2z) >= x1z
+        lblX = x2z + roiLabelGapPx;
+        hAlign = 'left';
+    else
+        lblX = x1z - roiLabelGapPx;
+        hAlign = 'right';
+    end
+    lblY = max(min(cyC, imgH - 10), 10);
+    text(lblX, lblY, sprintf('Accelerometer %d', k), ...
+        'FontName', labelFont, 'FontSize', labelFontSize, 'FontWeight', 'bold', ...
+        'Color', 'k', 'BackgroundColor', 'w', 'EdgeColor', [0.65 0.10 0.10], ...
+        'Margin', 4, 'HorizontalAlignment', hAlign, ...
+        'VerticalAlignment', 'middle', 'Clipping', 'off');
+end
+
+% Cleaner title for the publication-quality figure
+title('Tracking layout: structural polylines and accelerometer ROIs', ...
+    'FontName', labelFont, 'FontSize', 14, 'FontWeight', 'bold', 'Color', 'k');
+drawnow;
 exportgraphics(gcf, fullfile(outputDir,'01_tracked_points.png'), 'Resolution', 300);
 
 %% ----- TRACK (NCC for every point and every accel rectangle) -----------
