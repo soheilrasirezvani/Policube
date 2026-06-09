@@ -3,8 +3,8 @@ clear; clc; close all;
 %% ----- USER CONFIG -------------------------------------------------------
 videoFile = "D:\dronebasedVMM\Deep-Motion-Mag-Pytorch-main\Rightview-lab-final\9.5-10.5Hz\output_frames_P02m_30_fl9.5_fh10.5_fs60.0_n4_butter.mp4";
 
-lineLabels         = {'1st landing'};
-accelPatternLabels = {'acc0','acc1','acc2','acc3'};
+lineLabels         = {'Lower staircase set', 'Upper staircase set'};
+accelPatternLabels = {'Acc1','Acc2','Acc3','Acc4'};
 nPointsPerLine     = 20;
 
 % Modal analysis settings
@@ -563,6 +563,15 @@ phiStar = 0.5 * angle( sum(Ux.^2 + Uy.^2) );
 dx = real(Ux * exp(-1i * phiStar));        % per-point deflection in pixels
 dy = real(Uy * exp(-1i * phiStar));
 
+% Y-only variant: enforce zero X motion. The vertical bending mode
+% dominates the structural response in this band and the accelerometer
+% ground truth is single-axis (vertical), so X content in the video
+% mode shape is mostly tracker noise from the aperture problem along
+% the handrail. The optimal snapshot phase is recomputed from Uy alone.
+phiStar_y = 0.5 * angle( sum(Uy.^2) );
+dx_y      = zeros(size(dx));
+dy_y      = real(Uy * exp(-1i * phiStar_y));
+
 % Visual magnification: 'auto' targets ~5% of image height for the
 % largest pixel deflection, otherwise use the user-supplied number.
 maxDef = max(hypot(dx, dy));
@@ -803,106 +812,116 @@ title(ax, sprintf('Time-domain xcorr (no additional filtering, window %.1f-%.1f 
 legend(ax,'Location','northeastoutside');
 saveHQ(fig, '06_time_xcorr');
 
-%% ----- Plot: 2-D MODE SHAPE OVERLAY on the first frame -----------------
+%% ----- Plot: MODE SHAPE OVERLAY on the first frame ---------------------
 % Envelope style: for each portion both extremes of the modal cycle are
 % drawn (positive snapshot at phi* and negative snapshot at phi*+pi),
 % joined at the polyline endpoints to close the envelope, with a light
 % portion-colour fill between them.
 %   Filled markers  = positive half-cycle (Re(U exp(-i phi*)))
 %   Unfilled markers= negative half-cycle (-1 * above)
-% The thin white dashed centerline is the user-drawn reference polyline
-% so the envelope can be read as "structure swings between these two
-% colored lines around the dashed centerline".
-fig = figure('Name','Mode shape overlay','Color','w','Position',[60 60 1500 900]);
-ax  = axes(fig);
-imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
+%
+% Two variants are produced:
+%   07_mode_shape_overlay        : full 2-D mode shape (X and Y)
+%   08_mode_shape_overlay_Yonly  : Y-only mode shape (X enforced to zero)
+% The Y-only version suppresses tracker aperture noise along rails and
+% is the apples-to-apples comparison against single-axis accelerometers.
 
-% Per-portion colors. Matches the user's example envelope figure.
 portionColors = {[0.20 0.50 1.00], ... % blue
                  [0.20 0.80 0.20], ... % green
                  [1.00 0.55 0.10], ... % orange
                  [0.85 0.10 0.10]};    % red
-hLegEntries = gobjects(0);
-legNames    = strings(0);
 
-for k = 1:nLines
-    idx = lineIdx{k};
-    cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
-    jointMask = isJoint(idx);
+modeShapeVariants(1).dx     = dx;
+modeShapeVariants(1).dy     = dy;
+modeShapeVariants(1).suffix = '07_mode_shape_overlay';
+modeShapeVariants(1).tag    = '2-D (X + Y)';
+modeShapeVariants(2).dx     = dx_y;
+modeShapeVariants(2).dy     = dy_y;
+modeShapeVariants(2).suffix = '08_mode_shape_overlay_Yonly';
+modeShapeVariants(2).tag    = 'Y-only (X = 0 enforced)';
 
-    % Pixel deflections at this portion
-    xRefK = xRef(idx);  yRefK = yRef(idx);
-    dxK   = dx(idx);    dyK   = dy(idx);
+for vIdx = 1:numel(modeShapeVariants)
+    dxV = modeShapeVariants(vIdx).dx;
+    dyV = modeShapeVariants(vIdx).dy;
 
-    % Positive (+phi*) and negative (-phi*) envelope positions
-    xPos = xRefK + visMag * dxK;
-    yPos = yRefK + visMag * dyK;
-    xNeg = xRefK - visMag * dxK;
-    yNeg = yRefK - visMag * dyK;
+    fig = figure('Name', ['Mode shape overlay - ' modeShapeVariants(vIdx).tag], ...
+        'Color','w', 'Position',[60 60 1500 900]);
+    ax  = axes(fig);
+    imshow(firstFrame, 'Parent', ax); hold(ax, 'on');
+    hLegEntries = gobjects(0);
+    legNames    = strings(0);
 
-    % 1. Filled envelope polygon (positive forward, negative reversed)
-    xPoly = [xPos; flipud(xNeg)];
-    yPoly = [yPos; flipud(yNeg)];
-    patch(ax, xPoly, yPoly, cl, 'FaceAlpha', 0.18, 'EdgeColor', 'none', ...
-        'HandleVisibility', 'off');
+    for k = 1:nLines
+        idx = lineIdx{k};
+        cl  = portionColors{mod(k-1, numel(portionColors)) + 1};
+        jointMask = isJoint(idx);
 
-    % 2. Reference (drawn) centerline - thin white dashed with black halo
-    plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '-', ...
-        'Color', 'k', 'LineWidth', 2.8, 'HandleVisibility', 'off');
-    hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '--', ...
-        'Color', 'w', 'LineWidth', 1.6);
+        xRefK = xRef(idx);  yRefK = yRef(idx);
+        dxK   = dxV(idx);   dyK   = dyV(idx);
 
-    % 3. Envelope polylines (black halo + portion color) - same color as
-    %    the requested style and connected at the endpoints.
-    plot(ax, xPos, yPos, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
-    hPos = plot(ax, xPos, yPos, '-', 'Color', cl, 'LineWidth', 2.6);
-    plot(ax, xNeg, yNeg, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
-    plot(ax, xNeg, yNeg, '-', 'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
+        xPos = xRefK + visMag * dxK;
+        yPos = yRefK + visMag * dyK;
+        xNeg = xRefK - visMag * dxK;
+        yNeg = yRefK - visMag * dyK;
 
-    % 4. Closing segments at start / end (link positive and negative)
-    plot(ax, [xPos(1) xNeg(1)],   [yPos(1) yNeg(1)],   '-', ...
-        'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
-    plot(ax, [xPos(end) xNeg(end)], [yPos(end) yNeg(end)], '-', ...
-        'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
+        % 1. Filled envelope polygon
+        patch(ax, [xPos; flipud(xNeg)], [yPos; flipud(yNeg)], cl, ...
+            'FaceAlpha', 0.18, 'EdgeColor', 'none', 'HandleVisibility', 'off');
 
-    % 5. Markers per node
-    %    Positive half cycle: filled circles, portion color, black edge
-    %    Negative half cycle: open circles, portion color edge, white fill
-    plot(ax, xPos(~jointMask), yPos(~jointMask), 'o', ...
-        'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
-        'MarkerSize', 6, 'LineWidth', 0.7, 'HandleVisibility','off');
-    plot(ax, xNeg(~jointMask), yNeg(~jointMask), 'o', ...
-        'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
-        'MarkerSize', 6, 'LineWidth', 1.4, 'HandleVisibility','off');
+        % 2. Reference (drawn) centerline
+        plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '-', ...
+            'Color', 'k', 'LineWidth', 2.8, 'HandleVisibility', 'off');
+        hDr = plot(ax, lineVerts{k}(:,1), lineVerts{k}(:,2), '--', ...
+            'Color', 'w', 'LineWidth', 1.6);
 
-    %    Joints rendered slightly larger so polyline vertices stand out
-    plot(ax, xPos(jointMask), yPos(jointMask), 'o', ...
-        'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
-        'MarkerSize', 10, 'LineWidth', 0.9, 'HandleVisibility','off');
-    plot(ax, xNeg(jointMask), yNeg(jointMask), 'o', ...
-        'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
-        'MarkerSize', 10, 'LineWidth', 1.6, 'HandleVisibility','off');
+        % 3. Envelope polylines (black halo + portion color)
+        plot(ax, xPos, yPos, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
+        hPos = plot(ax, xPos, yPos, '-', 'Color', cl, 'LineWidth', 2.6);
+        plot(ax, xNeg, yNeg, '-', 'Color', 'k', 'LineWidth', 4.2, 'HandleVisibility', 'off');
+        plot(ax, xNeg, yNeg, '-', 'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
 
-    hLegEntries = [hLegEntries, hPos];
-    legNames    = [legNames, ...
-        string(lineLabels{k}) + sprintf(" envelope (x%d)", visMag)];
+        % 4. Closing segments at start / end
+        plot(ax, [xPos(1) xNeg(1)],     [yPos(1) yNeg(1)],     '-', ...
+            'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
+        plot(ax, [xPos(end) xNeg(end)], [yPos(end) yNeg(end)], '-', ...
+            'Color', cl, 'LineWidth', 2.6, 'HandleVisibility', 'off');
+
+        % 5. Markers per node
+        plot(ax, xPos(~jointMask), yPos(~jointMask), 'o', ...
+            'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
+            'MarkerSize', 6, 'LineWidth', 0.7, 'HandleVisibility','off');
+        plot(ax, xNeg(~jointMask), yNeg(~jointMask), 'o', ...
+            'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
+            'MarkerSize', 6, 'LineWidth', 1.4, 'HandleVisibility','off');
+        plot(ax, xPos(jointMask), yPos(jointMask), 'o', ...
+            'MarkerFaceColor', cl, 'MarkerEdgeColor', 'k', ...
+            'MarkerSize', 10, 'LineWidth', 0.9, 'HandleVisibility','off');
+        plot(ax, xNeg(jointMask), yNeg(jointMask), 'o', ...
+            'MarkerFaceColor', 'w', 'MarkerEdgeColor', cl, ...
+            'MarkerSize', 10, 'LineWidth', 1.6, 'HandleVisibility','off');
+
+        hLegEntries = [hLegEntries, hPos];
+        legNames    = [legNames, ...
+            string(lineLabels{k}) + sprintf(" envelope (x%d)", visMag)];
+    end
+
+    % Global legend entries
+    hPosMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', [0.4 0.4 0.4], ...
+        'MarkerEdgeColor', 'k', 'MarkerSize', 7, 'LineWidth', 0.8);
+    hNegMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', 'w', ...
+        'MarkerEdgeColor', [0.4 0.4 0.4], 'MarkerSize', 7, 'LineWidth', 1.4);
+    hLegEntries = [hLegEntries, hDr, hPosMk, hNegMk];
+    legNames    = [legNames, "reference (drawn)", ...
+        "filled marker = +half cycle", "open marker = -half cycle"];
+
+    title(ax, sprintf('Mode shape overlay  -  %.3f Hz  -  %s  (envelope x%d)', ...
+        peakGlobal, modeShapeVariants(vIdx).tag, visMag), ...
+        'Color', 'k', 'FontSize', 13, 'FontWeight','bold');
+    legend(hLegEntries, legNames, 'Location','northoutside', ...
+        'Orientation','horizontal', 'NumColumns', max(nLines, 3), ...
+        'TextColor','k', 'Color','w', 'EdgeColor',[0.3 0.3 0.3], 'FontSize', 10);
+    saveHQ(fig, modeShapeVariants(vIdx).suffix);
 end
-
-% Global legend entries for the positive / negative half-cycle markers
-hPosMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', [0.4 0.4 0.4], ...
-    'MarkerEdgeColor', 'k', 'MarkerSize', 7, 'LineWidth', 0.8);
-hNegMk = plot(ax, NaN, NaN, 'o', 'MarkerFaceColor', 'w', ...
-    'MarkerEdgeColor', [0.4 0.4 0.4], 'MarkerSize', 7, 'LineWidth', 1.4);
-hLegEntries = [hLegEntries, hDr, hPosMk, hNegMk];
-legNames    = [legNames, "reference (drawn)", ...
-    "filled marker = +half cycle", "open marker = -half cycle"];
-
-ttl = title(ax, sprintf('Mode shape overlay  -  %.3f Hz  (envelope x%d)', peakGlobal, visMag), ...
-    'Color', 'k', 'FontSize', 13, 'FontWeight','bold');
-lg = legend(hLegEntries, legNames, 'Location','northoutside', ...
-    'Orientation','horizontal', 'NumColumns', max(nLines, 3), ...
-    'TextColor','k', 'Color','w', 'EdgeColor',[0.3 0.3 0.3], 'FontSize', 10);
-saveHQ(fig, '07_mode_shape_overlay');
 
 %% ----- Final summary printout -------------------------------------------
 fprintf('\n===== SAVED TO: %s =====\n', outputDir);
