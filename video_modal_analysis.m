@@ -644,6 +644,30 @@ fprintf('  Global peak (avg PSD)   : %.4f Hz  (vs accel %.2f Hz: %.2f%% error)\n
 fprintf('  Pooled per-point peaks  : %.4f +/- %.4f Hz   (n=%d inliers / %d total)\n', ...
     muPeak, sdPeak, nInlier, numel(peakAllPts));
 
+% How many inliers fall within +/- 1 sigma of the pooled mean?
+in1s     = abs(peakAllPtsInl - muPeak) <= sdPeak;
+nIn1s    = sum(in1s);
+fprintf('  Within +/- 1 sigma band   : %d / %d inliers (%.1f%%)\n', ...
+    nIn1s, nInlier, 100*nIn1s/nInlier);
+
+% Per-group breakdown of "within +/- 1 sigma" count
+fprintf('\n===== INLIERS WITHIN +/- 1 SIGMA OF POOLED MEAN, per group =====\n');
+for k = 1:nLines
+    rows  = lineIdx{k};
+    inM   = isInlier(rows);
+    fp    = peakStructPP(rows(inM));
+    nIn   = sum(abs(fp - muPeak) <= sdPeak);
+    fprintf('  %-22s : %d / %d inliers in band\n', lineLabels{k}, nIn, numel(fp));
+end
+for k = 1:nPat
+    rows  = accFeatIdx{k};
+    gRows = nStructPts + rows;
+    inM   = isInlier(gRows);
+    fp    = peakFeatPP(rows(inM));
+    nIn   = sum(abs(fp - muPeak) <= sdPeak);
+    fprintf('  %-22s : %d / %d inliers in band\n', accelPatternLabels{k}, nIn, numel(fp));
+end
+
 %% ----- ROI SIGNAL QUALITY (out-of-band SNR) -----------------------------
 outBandIdx = ((f >= spectraXLim(1)) & (f <  magBand(1))) | ...
              ((f >  magBand(2))     & (f <= spectraXLim(2)));
@@ -985,8 +1009,10 @@ ylim(ax, [min([peakAllPts; accelTargetHz])-0.1*df-0.05, ...
 xlim(ax, xR);
 set(ax, 'XTick', xc, 'XTickLabel', groupLabels);
 xlabel(ax,'Tracking group');  ylabel(ax,'Peak frequency [Hz]');
-title(ax, sprintf('OVERALL: %.4f \\pm %.4f Hz   (%d inliers / %d total, %.0f\\sigma rule)   error vs accel: %.2f%%', ...
-    muPeak, sdPeak, nInlier, numel(peakAllPts), outlierTolSigma, ...
+title(ax, sprintf(['OVERALL: %.4f \\pm %.4f Hz   ' ...
+    '(%d of %d inliers within \\pm1\\sigma; %d outliers rejected by %.0f\\sigma rule)   ' ...
+    'error vs accel: %.2f%%'], ...
+    muPeak, sdPeak, nIn1s, nInlier, numel(peakAllPts)-nInlier, outlierTolSigma, ...
     100*abs(muPeak-accelTargetHz)/accelTargetHz), 'FontWeight','bold');
 legend(ax,'Location','southoutside','Orientation','horizontal');
 saveHQ(fig, '04_overall_pooled_peak');
