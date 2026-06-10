@@ -953,47 +953,72 @@ for k = 1:(nLines + nPat)
 end
 
 %% ----- Plot: overall pooled peak ----------------------------------------
-% Inlier measurements rendered as filled blue dots, outliers as red
-% crosses, so the 2-sigma exclusion is visible. Stats overlay (band +
-% mean line) is computed from inliers only.
-fig = figure('Name','Overall pooled peak','Color','w','Position',[80 80 1100 600]);
+% Heatmap-style rendering: each inlier dot is coloured by its peak
+% frequency using a diverging blue-white-red map centred on the
+% pooled mean, so values exactly at the mean look white and values
+% above / below stand out as warm / cool. Outliers (2-sigma rule) are
+% drawn as red x markers.
+fig = figure('Name','Overall pooled peak','Color','w','Position',[80 80 1180 600]);
 ax  = axes(fig); hold(ax,'on'); grid(ax,'on'); box(ax,'on');
 xc  = 1:(nLines+nPat);
-hIn = []; hOut = [];
+
+% Collect all inlier and outlier coordinates into single vectors
+xInAll = []; yInAll = []; xOutAll = []; yOutAll = [];
 for k = 1:nLines
     rows   = lineIdx{k};
     fp     = peakStructPP(rows);
     inMask = isInlier(rows);
-    hi = scatter(ax, k*ones(sum(inMask),1), fp(inMask), 50, [0.30 0.45 0.75], 'filled', ...
-        'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
-        'HandleVisibility','off');
-    if any(~inMask)
-        ho = scatter(ax, k*ones(sum(~inMask),1), fp(~inMask), 70, [0.85 0.15 0.15], 'x', ...
-            'LineWidth', 1.8, 'HandleVisibility','off');
-        if isempty(hOut), hOut = ho; end
-    end
-    if isempty(hIn), hIn = hi; end
+    xInAll  = [xInAll;  k*ones(sum(inMask),1)];
+    yInAll  = [yInAll;  fp(inMask)];
+    xOutAll = [xOutAll; k*ones(sum(~inMask),1)];
+    yOutAll = [yOutAll; fp(~inMask)];
 end
 for k = 1:nPat
     rows   = accFeatIdx{k};
     gRows  = nStructPts + rows;
     fp     = peakFeatPP(rows);
     inMask = isInlier(gRows);
-    scatter(ax, (nLines+k)*ones(sum(inMask),1), fp(inMask), 50, [0.30 0.45 0.75], 'filled', ...
-        'MarkerFaceAlpha', 0.55, 'MarkerEdgeColor','k', 'LineWidth', 0.3, ...
-        'HandleVisibility','off');
-    if any(~inMask)
-        ho = scatter(ax, (nLines+k)*ones(sum(~inMask),1), fp(~inMask), 70, [0.85 0.15 0.15], 'x', ...
-            'LineWidth', 1.8, 'HandleVisibility','off');
-        if isempty(hOut), hOut = ho; end
-    end
+    xInAll  = [xInAll;  (nLines+k)*ones(sum(inMask),1)];
+    yInAll  = [yInAll;  fp(inMask)];
+    xOutAll = [xOutAll; (nLines+k)*ones(sum(~inMask),1)];
+    yOutAll = [yOutAll; fp(~inMask)];
 end
-hIn.HandleVisibility = 'on';
-hIn.DisplayName = sprintf('Inlier peaks (n = %d)', nInlier);
-if ~isempty(hOut)
-    hOut.HandleVisibility = 'on';
-    hOut.DisplayName = sprintf('Outliers (>%.0f\\sigma, n = %d)', outlierTolSigma, nOutTot);
+
+% Diverging blue-white-red colormap centred on the pooled mean
+nCM    = 256;
+halfCM = floor(nCM/2);
+b1 = linspace(0.10, 1.00, halfCM).';  b2 = linspace(0.30, 1.00, halfCM).';
+b3 = linspace(0.75, 1.00, halfCM).';
+r1 = linspace(1.00, 0.80, nCM-halfCM).'; r2 = linspace(1.00, 0.10, nCM-halfCM).';
+r3 = linspace(1.00, 0.15, nCM-halfCM).';
+divMap = [[b1 b2 b3]; [r1 r2 r3]];
+colormap(ax, divMap);
+
+% Colour axis spans symmetrically around the pooled mean so the white
+% mid-tone really represents "equal to the mean".
+allYForCAx = [yInAll; yOutAll; accelTargetHz];
+maxDev = max(abs(allYForCAx - muPeak));
+if maxDev <= 0, maxDev = max(df, 0.05); end
+caxis(ax, [muPeak - maxDev, muPeak + maxDev]); %#ok<CAXIS>  % compat with older MATLAB
+
+% Inlier scatter (colored by peak frequency)
+hIn = scatter(ax, xInAll, yInAll, 70, yInAll, 'filled', ...
+    'MarkerEdgeColor', 'k', 'LineWidth', 0.5, ...
+    'DisplayName', sprintf('Inlier peaks (n = %d)', nInlier));
+
+% Outlier scatter (red x)
+hOut = [];
+if ~isempty(xOutAll)
+    hOut = scatter(ax, xOutAll, yOutAll, 95, [0.85 0.05 0.05], 'x', ...
+        'LineWidth', 2.2, ...
+        'DisplayName', sprintf('Outliers (>%.0f\\sigma, n = %d)', ...
+        outlierTolSigma, nOutTot));
 end
+
+% Colour bar for the peak-frequency axis (the heatmap dimension)
+cb = colorbar(ax, 'eastoutside');
+cb.Label.String = 'Peak frequency [Hz]';
+cb.Label.FontSize = 11;
 
 xR = [0.5, nLines+nPat+0.5];
 fill(ax, [xR fliplr(xR)], [muPeak-sdPeak muPeak-sdPeak muPeak+sdPeak muPeak+sdPeak], ...
