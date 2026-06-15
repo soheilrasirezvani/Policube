@@ -24,6 +24,7 @@ applyContrastBoost = true;     % CLAHE on the frame before NCC (helps low-contra
 nccConfidenceMin   = 0.30;     % NCC peak below this -> hold previous position
 halfPatch          = 25;       % line-point template half-size (px) -> (2*halfPatch+1)^2
 searchPad          = 12;       % search padding around line-point template (px)
+showTemplateBoxes  = true;     % overlay the NCC/KLT patch outlines on the setup figure
 
 % Output folder on the Desktop (timestamped so runs don't overwrite)
 desktopDir = fullfile(getenv('USERPROFILE'), 'Desktop');
@@ -302,6 +303,45 @@ for k = 1:nPat
     ptr = ptr + M;
 end
 allAccFeats0 = vertcat(accFeats0{:});
+
+%% ----- Show the patch / block outlines around each tracked point ------
+% Draws the actual rectangle the tracker uses around every point:
+%   - White semi-transparent boxes  -> NCC template extent
+%     for the structural line points (size = (2*halfPatch+1)^2 px,
+%     halfPatch is the config knob at the top of the script).
+%   - Red semi-transparent boxes    -> KLT BlockSize extent for
+%     each kept KLT feature inside an accelerometer ROI (31x31 px,
+%     matching the vision.PointTracker 'BlockSize' setting).
+% Useful when running on videos shot from different distances:
+% if the boxes look too small relative to the local structural texture
+% the half-size knob is too tight; if they overlap the surroundings
+% (rail bars, neighbouring features) it is too generous.
+if showTemplateBoxes
+    figure(figSetup);
+    nccSide = 2*halfPatch + 1;
+    kltHalf = 15;       % vision.PointTracker BlockSize = [31 31] -> half = 15
+    kltSide = 2*kltHalf + 1;
+
+    % NCC templates around the line points (white)
+    for j = 1:nStructPts
+        cx = pts0(j,1);  cy = pts0(j,2);
+        bx = cx + [-halfPatch, halfPatch, halfPatch, -halfPatch, -halfPatch];
+        by = cy + [-halfPatch, -halfPatch, halfPatch, halfPatch, -halfPatch];
+        plot(bx, by, '-', 'Color', [1 1 1 0.55], 'LineWidth', 0.7);
+    end
+
+    % KLT blocks around the kept accelerometer features (red)
+    for j = 1:size(allAccFeats0, 1)
+        cx = allAccFeats0(j,1);  cy = allAccFeats0(j,2);
+        bx = cx + [-kltHalf, kltHalf, kltHalf, -kltHalf, -kltHalf];
+        by = cy + [-kltHalf, -kltHalf, kltHalf, kltHalf, -kltHalf];
+        plot(bx, by, '-', 'Color', [1 0.30 0.30 0.55], 'LineWidth', 0.6);
+    end
+    fprintf(['Template overlays drawn on setup figure: ' ...
+             'NCC line-point patches %dx%d px (white), ' ...
+             'KLT accelerometer blocks %dx%d px (red)\n'], ...
+             nccSide, nccSide, kltSide, kltSide);
+end
 
 %% ----- Publication-ready labels on the setup figure -------------------
 % Place a callout near each tracked line (Lower / Upper staircase set)
