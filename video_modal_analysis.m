@@ -18,6 +18,18 @@ spectraXLim    = [8 19];      % Hz, x-axis for spectra plots
 %   number  -> e.g. 400 (matches the example you sent)
 modeShapeVisualMag = 'auto';
 
+% Mode-shape extraction frequency.
+%   []     -> use this clip's detected peak (peakGlobal) - default behaviour
+%   number -> evaluate the mode shape at the SAME fixed frequency for every
+%             clip. Recommended when comparing mode shapes across videos
+%             shot from different distances / scales: bin-snap quantisation
+%             can put peakGlobal one bin off in some clips even when the
+%             physical mode is the same. Setting this to the accelerometer
+%             ground truth (accelTargetHz) makes every clip evaluate its
+%             mode shape at the same frequency, so the shapes can be
+%             compared directly without worrying about which bin won.
+modeShapeFreqOverride = [];     % e.g. set to accelTargetHz
+
 % Tracking robustness
 useSubpixelNCC     = true;     % parabolic refinement of the NCC peak (sub-pixel resolution)
 applyContrastBoost = true;     % CLAHE on the frame before NCC (helps low-contrast ROIs)
@@ -812,7 +824,19 @@ Ywin = Y_struct(tMask, :) .* win;
 Xspec = fft(Xwin, nWin);
 Yspec = fft(Ywin, nWin);
 fMode = (0:floor(nWin/2)).' * fs / nWin;
-[~, ipk] = min(abs(fMode - peakGlobal));
+
+% Pick the FFT bin for mode-shape extraction:
+%   - default: this clip's detected peak (peakGlobal)
+%   - override: a fixed user-specified frequency so multiple clips can
+%     be compared at IDENTICAL evaluation frequency.
+if isempty(modeShapeFreqOverride)
+    fModeUse = peakGlobal;
+else
+    fModeUse = modeShapeFreqOverride;
+end
+[~, ipk] = min(abs(fMode - fModeUse));
+fprintf('Mode shape evaluated at %.4f Hz  (detected peak = %.4f Hz, bin = %.4f Hz)\n', ...
+    fModeUse, peakGlobal, fMode(ipk));
 
 % Normalize the FFT coefficient to a physical amplitude in pixels.
 % For a sinusoid of amplitude A and a window w, the bin magnitude is
@@ -1234,7 +1258,7 @@ for vIdx = 1:numel(modeShapeVariants)
         "filled marker = +half cycle", "open marker = -half cycle"];
 
     title(ax, sprintf('Mode shape overlay  -  %.3f Hz  -  %s  (envelope x%d)', ...
-        peakGlobal, modeShapeVariants(vIdx).tag, visMag), ...
+        fModeUse, modeShapeVariants(vIdx).tag, visMag), ...
         'Color', 'k', 'FontSize', 13, 'FontWeight','bold');
     legend(hLegEntries, legNames, 'Location','northoutside', ...
         'Orientation','horizontal', 'NumColumns', max(nLines, 3), ...
